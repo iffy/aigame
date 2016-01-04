@@ -1,6 +1,4 @@
 import copy
-import json
-from collections import defaultdict
 
 
 def ofType(thing, thing_type):
@@ -48,7 +46,13 @@ class Arg(object):
 
 class Action(object):
 
+    name = None
     args = []
+
+    def bind(self, arg_ids):
+        if isinstance(arg_ids, dict):
+            arg_ids = [arg_ids[arg.name]['id'] for arg in self.args]
+        return BoundAction(self, arg_ids)
 
     def timeEstimate(self, args, world):
         """
@@ -73,6 +77,30 @@ class Action(object):
         Return a new L{Context} with the effects of this action done.
         """
         raise NotImplemented
+
+    def __repr__(self):
+        name = self.name or (self.__class__.__name__)
+        return '<Action:{0}>'.format(name)
+
+
+class BoundAction(object):
+
+    def __init__(self, action, arg_ids):
+        self._action = action
+        self._arg_ids = arg_ids
+
+    def _callMethod(self, name, world):
+        real_args = [world['things'][x] for x in self._arg_ids]
+        return getattr(self._action, name)(real_args, world)
+
+    def preconditionsMet(self, world):
+        return self._callMethod('preconditionsMet', world)
+
+    def effectEffects(self, world):
+        return self._callMethod('effectEffects', world)
+
+    def __repr__(self):
+        return '<BoundAction {0!r} {1!r}>'.format(self._action, self._arg_ids)
 
 
 class Walk(Action):
@@ -121,6 +149,27 @@ class Node(object):
     def addChild(self, edge_data, child):
         self.children.append((edge_data, child))
 
+    def __repr__(self):
+        return '<Node {0!r} {1}>'.format(self.data, len(self.children))
+
+    def walk(self):
+        """
+        Generate each child, without edge information.
+        """
+        yield self
+        for (edge,child) in self.children:
+            for x in child.walk():
+                yield x
+
+    def listPaths(self):
+        """
+        Generate a (path, node) for each path/node pair.
+        """
+        yield [], self
+        for (edge, child) in self.children:
+            for path, node in child.listPaths():
+                yield [edge] + path, node
+
 
 class Path(object):
 
@@ -135,7 +184,7 @@ class Planner(object):
     def __init__(self):
         self.all_actions = []
 
-    def possiblePathsToGoal(self, actor_name, world, goal_func, args=None, kwargs=None):
+    def possiblePathsToGoal(self, actor_id, world, goal_func, args=None, kwargs=None):
         """
         Return all possible paths to a particular goal state.
 
@@ -145,68 +194,65 @@ class Planner(object):
         """
         args = args or ()
         kwargs = kwargs or {}
-        all_worlds, edges = self.buildActionTree(actor_name, world)
-        succeeded = []
-        print 'worlds', len(all_worlds)
-        for world in all_worlds:
-            actor = world['things'][actor_name]
-            if goal_func(actor, world, *args, **kwargs):
-                print 'success state found!', world
-                succeeded.append(world)
+        tree = self.buildActionTree(actor_id, world)
 
-        # walk the tree
-        # XXX super ineefificnet.  It's 11pm
+        # find end states
+        goal_nodes = []
+        for x in tree.walk():
+            actor = x.data['things'][actor_id]
+            if goal_func(actor, x.data, *args, **kwargs):
+                goal_nodes.append(x)
+        
+        for path, node in tree.listPaths():
+            if node in goal_nodes:
+                yield path
 
-        return []
 
-
-    def buildActionTree(self, actor_name, world):
+    def buildActionTree(self, actor_id, world):
         """
 
         """
-        starting_node = copy.deepcopy(world)
-        work = [starting_node]
-        all_worlds = []
-        edges = []
+        starting_world = copy.deepcopy(world)
+        done = []
+        tree = Node(starting_world)
+        work = [tree]
         while work:
-            old_world = work.pop(0)
-            if old_world in all_worlds:
-                # old_world already all_worlds
+            old_node = work.pop(0)
+            if old_node.data in done:
+                # old_node already done
                 continue
-            all_worlds.append(old_world)
-            #print 'processing old_world', old_world.data
+            done.append(old_node.data)
+            #print 'processing old_node', old_node.data
 
-            actor = old_world['things'][actor_name]
-            for action, args in self.possibleNextActions(actor, old_world):
+            old_world = old_node.data
+            for action in self.possibleNextActions(actor_id, old_world):
                 new_world = copy.deepcopy(old_world)
-                real_args = [new_world['things'][x['name']] for x in args]
-                action.effectEffects(real_args, new_world)
-                work.append(new_world)
+                action.effectEffects(new_world)
 
-                # process new world
-                edge = Path(old_world, new_world, (action, real_args))
-                edges.append(edge)
-            print 'len work', len(work)
-
-        return all_worlds, edges
+                # fill out tree
+                new_node = Node(new_world)
+                old_node.addChild(action, new_node)
+                
+                # add new world to queue
+                work.append(new_node)
+        return tree
 
 
     def prepArgs(self, action, kwargs):
         return [kwargs[arg.name] for arg in action.args]
 
-    def possibleNextActions(self, actor, world):
+    def possibleNextActions(self, actor_id, world):
         """
         Returns a list of all the possible actions this actor can perform
         """
         candidates = world['things'].values()
-        for action, kwargs in self._possibleActionsByArgRequirements(actor, candidates):
-            args = self.prepArgs(action, kwargs)
-            if not action.preconditionsMet(args, world):
+        actor = world['things'][actor_id]
+        for bound_action in self._possibleActionsByArgRequirements(actor, candidates):
+            if not bound_action.preconditionsMet(world):
                 continue
-            yield action, args
+            yield bound_action
 
     def _possibleActionsByArgRequirements(self, actor, candidates):
-        result = []
         # find all the actions that this actor can do.
         doable = (x for x in self.all_actions if x.args[0].matchesThing(actor))
 
@@ -216,9 +262,9 @@ class Planner(object):
             # find suitable options for other arguments
             if action.args[1:]:
                 for x in self.candidateArgs(current_args, action.args[1:], candidates):
-                    yield action, x
+                    yield action.bind(x)
             else:
-                yield action, current_args
+                yield action.bind(current_args)
 
     def findArgCandidates(self, current_args, arg, candidates):
         """
@@ -256,9 +302,9 @@ def runSimulation():
         'things': {},
     }
 
-    def addThing(name, x):
-        x['name'] = name
-        world['things'][name] = x
+    def addThing(id, x):
+        x['id'] = id
+        world['things'][id] = x
         return x
 
     bob = addThing('bob', {
