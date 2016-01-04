@@ -48,18 +48,27 @@ class Arg(object):
 
 
 
-class Cost(object):
 
-    def __init__(self, time=0, money=0, enjoyability=0):
-        self.time = time
-        self.money = money
-        self.enjoyability = enjoyability
+def computeCost(actor, time=0, money=0, disgust=0):
+    """
+    @param time: seconds
+    @param money: dollars
+    @param disgust: disgust units :)
+    """
+    # standard weights -- everything is relative to an hour of time
+    time_weight = 3600
+    money_weight = 20
+    disgust = 100
+    return (time_weight * time) + (money_weight * money) + (disgust * disgust)
 
 
 class Action(object):
 
     name = None
     args = []
+
+    def getName(self):
+        return self.name or (self.__class__.__name__)
 
     def bind(self, arg_ids):
         if isinstance(arg_ids, dict):
@@ -68,9 +77,9 @@ class Action(object):
 
     def cost(self, args, world):
         """
-        Return a L{Cost} instance for the cost associated with this action.
+        Return a numeric cost associated with this action.
         """
-        return Cost()
+        return 0
 
     def preconditionsMet(self, args, world):
         """
@@ -86,19 +95,21 @@ class Action(object):
         raise NotImplemented
 
     def __repr__(self):
-        name = self.name or (self.__class__.__name__)
-        return '<Action:{0}>'.format(name)
+        return '<Action:{0}>'.format(self.getName())
 
 
 class BoundAction(object):
 
     def __init__(self, action, arg_ids):
-        self._action = action
-        self._arg_ids = arg_ids
+        self.action = action
+        self.args = arg_ids
 
     def _callMethod(self, name, world):
-        real_args = [world['things'][x] for x in self._arg_ids]
-        return getattr(self._action, name)(real_args, world)
+        real_args = [world['things'][x] for x in self.args]
+        return getattr(self.action, name)(real_args, world)
+
+    def cost(self, world):
+        return self._callMethod('cost', world)
 
     def preconditionsMet(self, world):
         return self._callMethod('preconditionsMet', world)
@@ -107,7 +118,10 @@ class BoundAction(object):
         return self._callMethod('effectEffects', world)
 
     def __repr__(self):
-        return '<BoundAction {0!r} {1!r}>'.format(self._action, self._arg_ids)
+        return '<BoundAction {0!r} {1!r}>'.format(self.action, self.args)
+
+    def __str__(self):
+        return '{0}{1!r}'.format(self.action.getName(), self.args)
 
 
 class Node(object):
@@ -149,36 +163,64 @@ class Path(object):
         self.data = data
 
 
+class Goal(object):
+
+    def __init__(self, check, whittle=None):
+        self.check = check
+        if whittle:
+            self.whittle = whittle
+
+    def whittle(self, world):
+        return copy.deepcopy(world['things'])
+
+
 class Planner(object):
 
     def __init__(self):
         self.all_actions = []
 
-    def possiblePathsToGoal(self, actor_id, world, goal_func, args=None, kwargs=None):
+    def bestPathsToGoal(self, actor_id, world, goal):
+        """
+        Return best paths to a particular goal state.
+
+        @param goal: An instance of L{Goal}.
+        """
+        # XXX not an efficient algorithm
+        paths_with_cost = []
+
+        for path in self.possiblePathsToGoal(actor_id, world, goal):
+            total_cost = 0
+            action_world = copy.deepcopy(world)
+            for action in path:
+                total_cost += action.cost(action_world)
+                action.effectEffects(action_world)
+            paths_with_cost.append((path, total_cost))
+        
+        best_cost = min(x[1] for x in paths_with_cost)
+
+        for path, cost in paths_with_cost:
+            if cost == best_cost:
+                yield path
+
+    def possiblePathsToGoal(self, actor_id, world, goal):
         """
         Return all possible paths to a particular goal state.
 
-        @param goal_func: A function that should return True if the goal is achieved,
-            and False if it is not achieved.  Called like this:
-            goal_func(future_actor, future_world, *args, **kwargs)
+        @param goal: An instance of L{Goal}.
         """
-        args = args or ()
-        kwargs = kwargs or {}
-        tree = self.buildActionTree(actor_id, world)
+        tree = self.buildActionTree(actor_id, world, goal)
 
         # find end states
         goal_nodes = []
         for x in tree.walk():
-            actor = x.data['things'][actor_id]
-            if goal_func(actor, x.data, *args, **kwargs):
+            if goal.check(x.data):
                 goal_nodes.append(x)
         
         for path, node in tree.listPaths():
             if node in goal_nodes:
                 yield path
 
-
-    def buildActionTree(self, actor_id, world):
+    def buildActionTree(self, actor_id, world, goal):
         """
 
         """
@@ -188,10 +230,11 @@ class Planner(object):
         work = [tree]
         while work:
             old_node = work.pop(0)
-            if old_node.data in done:
+            whittled = goal.whittle(old_node.data)
+            if whittled in done:
                 # old_node already done
                 continue
-            done.append(old_node.data)
+            done.append(whittled)
 
             old_world = old_node.data
             for action in self.possibleNextActions(actor_id, old_world):
@@ -265,9 +308,14 @@ class Planner(object):
 class Walk(Action):
 
     args = [
-        Arg('actor', type='biped'),
+        Arg('actor', has_attr='walking_speed'),
         Arg('dest', type='location'),
     ]
+
+    def cost(self, (actor, dest), world):
+        distance = dest['coordinates'] - actor['coordinates']
+        time_cost = distance / actor['walking_speed']
+        return computeCost(actor, time=time_cost)
     
     def preconditionsMet(self, (actor, dest), world):
         return actor['coordinates'] != dest['coordinates']
@@ -280,9 +328,14 @@ class Ride(Action):
 
     args = [
         Arg('actor', type='biped'),
-        Arg('rideable', type='rideable', had_by='actor'),
+        Arg('rideable', type='rideable', has_attr='speed', had_by='actor'),
         Arg('dest', type='location'),
     ]
+
+    def cost(self, (actor, rideable, dest), world):
+        distance = dest['coordinates'] - actor['coordinates']
+        time_cost = distance / rideable['speed']
+        return computeCost(actor, time=time_cost)
     
     def preconditionsMet(self, (actor, rideable, dest), world):
         return actor['coordinates'] != dest['coordinates']
@@ -308,6 +361,7 @@ class Take(Action):
         actor['inventory'].append(obj['id'])
         obj.pop('coordinates')
 
+
 class Drop(Action):
 
     args = [
@@ -324,6 +378,9 @@ class Drop(Action):
         actor['inventory'].remove(obj['id'])
 
 
+def formatPath(path):
+    return ' --> '.join(str(x) for x in path)
+
 def runSimulation():
     planner = Planner()
     planner.all_actions.append(Walk())
@@ -333,6 +390,7 @@ def runSimulation():
 
     world = {
         'things': {},
+        'time': 0,
     }
 
     def addThing(id, x):
@@ -367,11 +425,14 @@ def runSimulation():
     # for x in planner.possibleNextActions(bob, world):
     #     print x
 
-    def goal(actor, world):
+    def check(world):
+        actor = world['things']['bob']
         return actor['coordinates'] == world['things']['work']['coordinates']
 
-    for x in planner.possiblePathsToGoal('bob', world, goal):
-        print x
+    goal = Goal(check)
+
+    for x in planner.bestPathsToGoal('bob', world, goal):
+        print formatPath(x)
 
 
 
