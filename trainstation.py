@@ -1,4 +1,7 @@
 import copy
+import argparse
+import math
+import random
 
 
 def ofType(thing, thing_type):
@@ -24,6 +27,32 @@ def hasThingOfType(actor, thing_type):
 
 def distanceBetween(a, b):
     return abs(b['coordinates'] - a['coordinates'])
+
+def destroyThing(world, thing_id):
+    world['things'].pop(thing_id)
+
+
+def alterMorality(actor, action_badness, max_range=(-2, 2)):
+    """
+    Change an actor's morality based on a moral decision.
+    So if they do a bad thing, reduce their morality, and if they
+    do a good thing, increase their morality.
+    """
+    if not action_badness:
+        return
+    current = actor.get('morality', 1)
+    if current == 0:
+        # neutral stays neutral
+        return
+    movement = action_badness / 10000.0
+    current -= movement
+    if current == 0:
+        current = math.copysign(1, movement) * 0.0001
+    elif current < max_range[0]:
+        current = max_range[0]
+    elif current > max_range[1]:
+        current = max_range[1]
+    actor['morality'] = current
 
 
 class Arg(object):
@@ -214,6 +243,8 @@ class Planner(object):
                 total_cost += action.cost(action_world)
                 action.effectEffects(action_world)
             paths_with_cost.append((path, total_cost))
+            #print total_cost, formatPath(path)
+        #print '-'*30
 
         best_cost = min(x[1] for x in paths_with_cost)
 
@@ -370,9 +401,12 @@ class Take(Action):
         Arg('obj', type='takeable'),
     ]
 
+    def badness_cost(self, (actor, obj), world):
+        return obj.get('price', 0) * 100
+
     def cost(self, (actor, obj), world):
         # It's bad to steal
-        badness = obj.get('price', 0) * 100
+        badness = self.badness_cost((actor, obj), world)
         return computeCost(actor, time=0.01, badness=badness)
 
     def preconditionsMet(self, (actor, obj), world):
@@ -384,8 +418,12 @@ class Take(Action):
         return True
 
     def effectEffects(self, (actor, obj), world):
+        badness_cost = self.badness_cost((actor, obj), world)
         actor['inventory'].append(obj['id'])
         obj.pop('coordinates')
+        if 'price' in obj:
+            obj['value'] = obj.pop('price')
+        alterMorality(actor, badness_cost)
 
 
 class Drop(Action):
@@ -449,19 +487,20 @@ class Use(Action):
                 return False
         except KeyError:
             return False
-        if 'use_requires' in obj:
+        if 'use_consumes' in obj:
             inventory = actor.get('inventory', [])
             for item in (world['things'][x] for x in inventory):
-                if obj['use_requires'] in item['types']:
+                if obj['use_consumes'] in item['types']:
                     return True
         return False
 
     def effectEffects(self, (actor, obj), world):
-        if 'use_requires' in obj:
+        if 'use_consumes' in obj:
             inventory = actor.get('inventory', [])
             for item in (world['things'][x] for x in inventory):
-                if obj['use_requires'] in item:
+                if obj['use_consumes'] in item['types']:
                     inventory.remove(item['id'])
+                    destroyThing(world, item['id'])
                     break
         if 'coordinates' in obj['effect']:
             actor['coordinates'] = obj['effect']['coordinates']
@@ -471,7 +510,24 @@ class Use(Action):
 def formatPath(path):
     return ' --> '.join(str(x) for x in path)
 
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--morality', default=1, type=float,
+    help='1 = Bob is a good person,'
+         ' 0 = Bob believes there is no good/bad,'
+         ' -1 = Bob loves to be bad,'
+         ' 2 = Bob is super good,'
+         ' -2 = Bob really likes to do bad things,')
+ap.add_argument('--money-value', default=10, type=float,
+    help='How much money is worth an hour to Bob.')
+ap.add_argument('--money', default=10, type=int,
+    help='Dollars Bob has.')
+ap.add_argument('--walking-speed', default=1, type=int,
+    help='Units per hour Bob can walk.')
+
 def runSimulation():
+    args = ap.parse_args()
+
     planner = Planner()
     planner.all_actions.append(Walk())
     planner.all_actions.append(Ride())
@@ -493,11 +549,11 @@ def runSimulation():
     addThing('bob', {
         'types': ['biped'],
         'inventory': [],
-        'walking_speed': 1/3600.0,
+        'walking_speed': args.walking_speed/3600.0,
         'coordinates': 0,
-        'money': 10,
-        'morality': 1,
-        'money_value': 10,
+        'money': args.money,
+        'morality': args.morality,
+        'money_value': args.money_value,
     })
     addThing('home', {
         'types': ['location'],
@@ -523,11 +579,11 @@ def runSimulation():
             'coordinates': 5,
             'speed': 80/3600.0,
         },
-        'use_requires': 'trainticket',
+        'use_consumes': 'trainticket',
     })
     addThing('trainticket1', {
         'types': ['takeable', 'trainticket'],
-        'price': 1,
+        'price': 4,
         'coordinates': 0,
     })
 
@@ -538,11 +594,27 @@ def runSimulation():
         actor = world['things']['bob']
         return actor['coordinates'] == world['things']['work']['coordinates']
 
-    goal = Goal(check)
+    def whittle(world):
+        return copy.deepcopy(world['things'])
 
-    for x in planner.bestPathsToGoal('bob', world, goal):
-        print formatPath(x)
+    goal = Goal(check, whittle)
 
+    paths = list(planner.bestPathsToGoal('bob', world, goal))
+    print 'best options:'
+    print '-'*40
+    for path in paths:
+        print formatPath(path)
+
+    print '-'*40
+    print 'choosing:'
+    path = random.choice(paths)
+    print formatPath(path)
+    for action in path:
+        action.effectEffects(world)
+    
+    print world['things']['bob']
+
+    
 
 
 
