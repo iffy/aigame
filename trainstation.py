@@ -47,6 +47,15 @@ class Arg(object):
         return all(conds)
 
 
+
+class Cost(object):
+
+    def __init__(self, time=0, money=0, enjoyability=0):
+        self.time = time
+        self.money = money
+        self.enjoyability = enjoyability
+
+
 class Action(object):
 
     name = None
@@ -57,16 +66,11 @@ class Action(object):
             arg_ids = [arg_ids[arg.name]['id'] for arg in self.args]
         return BoundAction(self, arg_ids)
 
-    def timeEstimate(self, args, world):
+    def cost(self, args, world):
         """
-        Return perceived numeric time required to do this action.
+        Return a L{Cost} instance for the cost associated with this action.
         """
-        raise NotImplemented
-    
-    # timeEstimate = 0
-    # moneycost = 0
-    # # riskiness?
-    # # unpleasantness?
+        return Cost()
 
     def preconditionsMet(self, args, world):
         """
