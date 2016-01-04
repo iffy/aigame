@@ -11,7 +11,7 @@ def hasThing(actor, thing):
     """
     Return C{True} if the C{actor} has C{thing}.
     """
-    return thing in actor.get('inventory', [])
+    return thing['id'] in actor.get('inventory', [])
 
 def hasThingOfType(actor, thing_type):
     """
@@ -25,9 +25,10 @@ def hasThingOfType(actor, thing_type):
 
 class Arg(object):
 
-    def __init__(self, name, type=None, had_by=None):
+    def __init__(self, name, type=None, has_attr=None, had_by=None):
         self.name = name
         self.type = type
+        self.has_attr = has_attr
         self.had_by = had_by
 
     def matchesThing(self, thing, current_args=None):
@@ -39,6 +40,8 @@ class Arg(object):
         conds = []
         if self.type is not None:
             conds.append(ofType(thing, self.type))
+        if self.has_attr is not None:
+            conds.append(self.has_attr in thing)
         if self.had_by is not None:
             conds.append(hasThing(current_args[self.had_by], thing))
         return all(conds)
@@ -101,43 +104,6 @@ class BoundAction(object):
 
     def __repr__(self):
         return '<BoundAction {0!r} {1!r}>'.format(self._action, self._arg_ids)
-
-
-class Walk(Action):
-
-    args = [
-        Arg('actor', type='biped'),
-        Arg('dest', type='location'),
-    ]
-
-    def timeEstimate(self, (actor, dest), world):
-        distance = abs(location['coordinates'] - actor['coordinates'])
-        return actor['walking_speed'] * distance
-    
-    def preconditionsMet(self, (actor, dest), world):
-        return actor['coordinates'] != dest['coordinates']
-
-    def effectEffects(self, (actor, dest), world):
-        actor['coordinates'] = dest['coordinates']
-
-
-class Ride(Action):
-
-    args = [
-        Arg('actor', type='biped'),
-        Arg('rideable', type='rideable', had_by='actor'),
-        Arg('dest', type='location'),
-    ]
-
-    def timeEstimate(self, (actor, rideable, dest), world):
-        distance = abs(dest['coordinates'] - actor['coordinates'])
-        return rideable['speed'] * distance
-    
-    def preconditionsMet(self, (actor, rideable, dest), world):
-        return actor['coordinates'] != dest['coordinates']
-
-    def effectEffects(self, (actor, rideable, dest), world):
-        actor['coordinates'] = dest['coordinates']
 
 
 class Node(object):
@@ -222,7 +188,6 @@ class Planner(object):
                 # old_node already done
                 continue
             done.append(old_node.data)
-            #print 'processing old_node', old_node.data
 
             old_world = old_node.data
             for action in self.possibleNextActions(actor_id, old_world):
@@ -293,10 +258,74 @@ class Planner(object):
                 yield new_args
 
 
+class Walk(Action):
+
+    args = [
+        Arg('actor', type='biped'),
+        Arg('dest', type='location'),
+    ]
+    
+    def preconditionsMet(self, (actor, dest), world):
+        return actor['coordinates'] != dest['coordinates']
+
+    def effectEffects(self, (actor, dest), world):
+        actor['coordinates'] = dest['coordinates']
+
+
+class Ride(Action):
+
+    args = [
+        Arg('actor', type='biped'),
+        Arg('rideable', type='rideable', had_by='actor'),
+        Arg('dest', type='location'),
+    ]
+    
+    def preconditionsMet(self, (actor, rideable, dest), world):
+        return actor['coordinates'] != dest['coordinates']
+
+    def effectEffects(self, (actor, rideable, dest), world):
+        actor['coordinates'] = dest['coordinates']
+
+
+class Take(Action):
+
+    args = [
+        Arg('actor', has_attr='inventory'),
+        Arg('obj', type='takeable'),
+    ]
+
+    def preconditionsMet(self, (actor, obj), world):
+        try:
+            return actor['coordinates'] == obj['coordinates']
+        except KeyError:
+            return False
+
+    def effectEffects(self, (actor, obj), world):
+        actor['inventory'].append(obj['id'])
+        obj.pop('coordinates')
+
+class Drop(Action):
+
+    args = [
+        Arg('actor', has_attr='inventory'),
+        Arg('obj', had_by='actor'),
+    ]
+
+    def preconditionsMet(self, (actor, obj), world):
+        # XXX conditions defined by args are sufficient
+        return True
+
+    def effectEffects(self, (actor, obj), world):
+        obj['coordinates'] = actor['coordinates']
+        actor['inventory'].remove(obj['id'])
+
+
 def runSimulation():
     planner = Planner()
     planner.all_actions.append(Walk())
     planner.all_actions.append(Ride())
+    planner.all_actions.append(Take())
+    planner.all_actions.append(Drop())
 
     world = {
         'things': {},
@@ -307,27 +336,28 @@ def runSimulation():
         world['things'][id] = x
         return x
 
-    bob = addThing('bob', {
+    addThing('bob', {
         'types': ['biped'],
+        'inventory': [],
         'walking_speed': 1,
         'coordinates': 0,
     })
-    home = addThing('home', {
+    addThing('home', {
         'types': ['location'],
         'coordinates': 0,
     })
-    work = addThing('work', {
+    addThing('work', {
         'types': ['location'],
         'coordinates': 5,
     })
-    gym = addThing('gym', {
+    addThing('shed', {
         'types': ['location'],
         'coordinates': -1,
     })
-    bike = addThing('red bike', {
-        'types': ['rideable'],
+    addThing('red bike', {
+        'types': ['rideable', 'takeable'],
         'speed': 2,
-        'coordinates': 0,
+        'coordinates': -1,
     })
 
     # for x in planner.possibleNextActions(bob, world):
