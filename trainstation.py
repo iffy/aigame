@@ -22,13 +22,18 @@ def hasThingOfType(actor, thing_type):
             return True
     return False
 
+def distanceBetween(a, b):
+    return abs(b['coordinates'] - a['coordinates'])
+
 
 class Arg(object):
 
     def __init__(self, name, type=None, has_attr=None, had_by=None):
         self.name = name
         self.type = type
-        self.has_attr = has_attr
+        self.has_attr = has_attr or []
+        if not isinstance(self.has_attr, list):
+            self.has_attr = [self.has_attr]
         self.had_by = had_by
 
     def matchesThing(self, thing, current_args=None):
@@ -40,8 +45,8 @@ class Arg(object):
         conds = []
         if self.type is not None:
             conds.append(ofType(thing, self.type))
-        if self.has_attr is not None:
-            conds.append(self.has_attr in thing)
+        for attr in self.has_attr:
+            conds.append(attr in thing)
         if self.had_by is not None:
             conds.append(hasThing(current_args[self.had_by], thing))
         return all(conds)
@@ -49,17 +54,25 @@ class Arg(object):
 
 
 
-def computeCost(actor, time=0, money=0, disgust=0):
+def computeCost(actor, time=0, money=0, disgust=0, badness=0):
     """
     @param time: seconds
     @param money: dollars
     @param disgust: disgust units :)
+    @param badness: moral badness of an action, in badness units.
     """
     # standard weights -- everything is relative to an hour of time
-    time_weight = 3600
-    money_weight = 20
-    disgust = 100
-    return (time_weight * time) + (money_weight * money) + (disgust * disgust)
+    time_weight = 1/3600.0
+    money_weight = actor.get('money_value', 20)
+    disgust_weight = 20
+    badness_weight = actor.get('morality', 1) * 20
+
+    return sum([
+        (time_weight * time),
+        (money_weight * money),
+        (disgust_weight * disgust),
+        (badness_weight * badness),
+    ])
 
 
 class Action(object):
@@ -75,11 +88,17 @@ class Action(object):
             arg_ids = [arg_ids[arg.name]['id'] for arg in self.args]
         return BoundAction(self, arg_ids)
 
+    def timecost(self, args, world):
+        """
+        Return the number of seconds the action takes.
+        """
+        return 0
+
     def cost(self, args, world):
         """
         Return a numeric cost associated with this action.
         """
-        return 0
+        return self.timecost(args, world)
 
     def preconditionsMet(self, args, world):
         """
@@ -195,7 +214,7 @@ class Planner(object):
                 total_cost += action.cost(action_world)
                 action.effectEffects(action_world)
             paths_with_cost.append((path, total_cost))
-        
+
         best_cost = min(x[1] for x in paths_with_cost)
 
         for path, cost in paths_with_cost:
@@ -313,7 +332,7 @@ class Walk(Action):
     ]
 
     def cost(self, (actor, dest), world):
-        distance = dest['coordinates'] - actor['coordinates']
+        distance = distanceBetween(actor, dest)
         time_cost = distance / actor['walking_speed']
         return computeCost(actor, time=time_cost)
     
@@ -333,7 +352,7 @@ class Ride(Action):
     ]
 
     def cost(self, (actor, rideable, dest), world):
-        distance = dest['coordinates'] - actor['coordinates']
+        distance = distanceBetween(actor, dest)
         time_cost = distance / rideable['speed']
         return computeCost(actor, time=time_cost)
     
@@ -351,11 +370,18 @@ class Take(Action):
         Arg('obj', type='takeable'),
     ]
 
+    def cost(self, (actor, obj), world):
+        # It's bad to steal
+        badness = obj.get('price', 0) * 100
+        return computeCost(actor, time=0.01, badness=badness)
+
     def preconditionsMet(self, (actor, obj), world):
         try:
-            return actor['coordinates'] == obj['coordinates']
+            if actor['coordinates'] != obj['coordinates']:
+                return False
         except KeyError:
             return False
+        return True
 
     def effectEffects(self, (actor, obj), world):
         actor['inventory'].append(obj['id'])
@@ -378,6 +404,70 @@ class Drop(Action):
         actor['inventory'].remove(obj['id'])
 
 
+class Buy(Action):
+
+    args = [
+        Arg('actor', has_attr=['inventory', 'money']),
+        Arg('obj', type='takeable', has_attr='price'),
+    ]
+
+    def cost(self, (actor, obj), world):
+        return computeCost(actor, time=0.01, money=obj['price'])
+
+    def preconditionsMet(self, (actor, obj), world):
+        try:
+            if actor['coordinates'] != obj['coordinates']:
+                return False
+        except KeyError:
+            return False
+        return actor['money'] >= obj['price']
+
+    def effectEffects(self, (actor, obj), world):
+        actor['money'] -= obj['price']
+        actor['inventory'].append(obj['id'])
+        obj.pop('coordinates')
+        obj['value'] = obj.pop('price')
+
+
+class Use(Action):
+
+    args = [
+        Arg('actor'),
+        Arg('obj', type='useable'),
+    ]
+
+    def cost(self, (actor, obj), world):
+        time_cost = 0
+        if 'coordinates' in obj['effect'] and 'speed' in obj['effect']:
+            distance = distanceBetween(actor, obj['effect'])
+            time_cost = distance / obj['effect']['speed']
+        return computeCost(actor, time=time_cost)
+
+    def preconditionsMet(self, (actor, obj), world):
+        try:
+            if actor['coordinates'] != obj['coordinates']:
+                return False
+        except KeyError:
+            return False
+        if 'use_requires' in obj:
+            inventory = actor.get('inventory', [])
+            for item in (world['things'][x] for x in inventory):
+                if obj['use_requires'] in item['types']:
+                    return True
+        return False
+
+    def effectEffects(self, (actor, obj), world):
+        if 'use_requires' in obj:
+            inventory = actor.get('inventory', [])
+            for item in (world['things'][x] for x in inventory):
+                if obj['use_requires'] in item:
+                    inventory.remove(item['id'])
+                    break
+        if 'coordinates' in obj['effect']:
+            actor['coordinates'] = obj['effect']['coordinates']
+
+
+
 def formatPath(path):
     return ' --> '.join(str(x) for x in path)
 
@@ -387,6 +477,8 @@ def runSimulation():
     planner.all_actions.append(Ride())
     planner.all_actions.append(Take())
     planner.all_actions.append(Drop())
+    planner.all_actions.append(Buy())
+    planner.all_actions.append(Use())
 
     world = {
         'things': {},
@@ -401,8 +493,11 @@ def runSimulation():
     addThing('bob', {
         'types': ['biped'],
         'inventory': [],
-        'walking_speed': 1,
+        'walking_speed': 1/3600.0,
         'coordinates': 0,
+        'money': 10,
+        'morality': 1,
+        'money_value': 10,
     })
     addThing('home', {
         'types': ['location'],
@@ -418,8 +513,22 @@ def runSimulation():
     })
     addThing('red bike', {
         'types': ['rideable', 'takeable'],
-        'speed': 2,
+        'speed': 3/3600.0,
         'coordinates': -1,
+    })
+    addThing('train station A', {
+        'types': ['useable', 'trainstation'],
+        'coordinates': -1,
+        'effect': {
+            'coordinates': 5,
+            'speed': 80/3600.0,
+        },
+        'use_requires': 'trainticket',
+    })
+    addThing('trainticket1', {
+        'types': ['takeable', 'trainticket'],
+        'price': 1,
+        'coordinates': 0,
     })
 
     # for x in planner.possibleNextActions(bob, world):
