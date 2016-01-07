@@ -233,6 +233,19 @@ class MemPriority(_BaseNode):
 
 
 
+class Inverter(_BaseNode):
+
+    def __init__(self, child):
+        self.child = child
+
+    def tick(self, ctx):
+        status = self.child.run(ctx)
+        if status == FAIL:
+            return OK
+        elif status == OK:
+            return FAIL
+        return status
+
 #-----------------------------------------------------------
 # Actions
 #-----------------------------------------------------------
