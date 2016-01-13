@@ -2,7 +2,7 @@
 
 var world, mass, tickables=[], moveables=[], timeStep=1/60,
          ground, camera, scene, renderer, materials, playing = true,
-    inputs = {};
+    inputs = {}, press_inputs = {};
 
 // start
 initThree();
@@ -78,6 +78,9 @@ function animate(f) {
 function updatePhysics() {
     // Step the physics world
     world.step(timeStep);
+    if (world.contacts) {
+        console.log('contacts', world.contacts);
+    }
     // Copy coordinates from physics to display
     for (var i = 0; i < moveables.length; i++) {
       moveables[i].updateView();
@@ -107,20 +110,31 @@ function scene1() {
     world.addBody(critter.body);
     scene.add(critter.mesh);
     moveables.push(critter);
+
+    // critter to run into
+    var c2 = new BoxCritter();
+    c2.body.position.set(3, 3, 3);
+    world.addBody(c2.body);
+    scene.add(c2.mesh);
+    moveables.push(c2);
 }
 
 //-------------------------------------------------------------------
 // Keyboard input
 var KEYS = {
-    'w': 87,
-    'd': 68,
+    // XXX you could make the code compute most of these :)
     'a': 65,
+    'd': 68,
+    'j': 74,
     's': 83,
+    'w': 87,
+    'z': 90,
     'escape': 27,
     'space': 32,
 }
 var KEYSinv = _.invert(KEYS);
 function initKeyboard() {
+    var _yet_to_come_ups = {};
     window.addEventListener('keydown', function(e) {
         if (e.keyCode == KEYS.escape) {
             // ESC == pause
@@ -128,18 +142,31 @@ function initKeyboard() {
             console.log('playing', playing);
             return false;
         } else if (KEYSinv[e.keyCode]) {
-            inputs[KEYSinv[e.keyCode]] = true;
+            var name = KEYSinv[e.keyCode];
+            inputs[name] = true;
+            if (!_yet_to_come_ups[name]) {
+                // still down from the last time
+                _yet_to_come_ups[name] = true;
+                press_inputs[name] = true;
+            }
             return false;
         } else {
             console.log(e.keyCode);
         }
     });
     window.addEventListener('keyup', function(e) {
-        if (KEYSinv[e.keyCode]) {
-            delete inputs[KEYSinv[e.keyCode]];
+        var name = KEYSinv[e.keyCode];
+        if (name) {
+            delete inputs[name];
+            if (_yet_to_come_ups[name]) {
+                delete _yet_to_come_ups[name];
+            }
             return false;
         }
     });
+}
+function controlCritter(critter) {
+    window.addEventListener('keydown')
 }
 
 
@@ -155,10 +182,15 @@ function BoxCritter(options) {
     this.mesh = null;
     this.body = null;
     this.alive = true;
-    this.max_move_speed = 6;
-    this.acceleration = 1.2;
     this.controlled_by_inputs = false;
     this.target_facing = 0;
+
+    this.max_walk_speed = 6;
+    this.walk_acceleration = 1.2;
+    this.target_walk_velocity = [0, 0];
+
+    this.zap_state = false;
+    this.zap_speed = 90;
 
     // visual manifestation
     var geometry = new THREE.BoxGeometry(size, size, size);
@@ -183,41 +215,90 @@ function BoxCritter(options) {
     tickables.push(this);
     return this;
 }
+BoxCritter.prototype.startWalking = function(x,y) {
+    this.target_walk_velocity[0] += x;
+    this.target_walk_velocity[1] += y;
+    return function() {
+        this.stopWalking(x, y);
+    }.bind(this);
+}
+BoxCritter.prototype.stopWalking = function(x,y) {
+    this.target_walk_velocity[0] -= x;
+    this.target_walk_velocity[1] -= y;
+}
 
 BoxCritter.prototype.tick = function(e) {
     if (!this.alive) {
         return;
     }
-    if (this.controlled_by_inputs) {
-        // axis movement
-        var y = this.body.velocity.y * 0.5;
-        var x = this.body.velocity.x * 0.5;
-        var z = this.body.velocity.z;
-        if (inputs.w) {
-            y += this.max_move_speed;
-            this.target_facing = 0.5 * Math.PI;
-        }
-        if (inputs.s) {
-            y -= this.max_move_speed;
-            this.target_facing = 1.5 * Math.PI;
-        }
-        if (inputs.a) {
-            x -= this.max_move_speed;
-            this.target_facing = Math.PI;
-        }
-        if (inputs.d) {
-            x += this.max_move_speed;
-            this.target_facing = 0;
-        }
-        if (inputs.space) {
-            z = 5;
-        }
-        this.body.velocity.set(x, y, z);
 
-        // facing
-        this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1),
-                this.target_facing);
+    var y = this.body.velocity.y * 0.5;
+    var x = this.body.velocity.x * 0.5;
+    var z = this.body.velocity.z;
+
+    // XXX break this hard-coding out of here.
+    if (this.controlled_by_inputs) {
+        // Handle things that are controlled by discrete key press
+        if (press_inputs.j) {
+            delete press_inputs.j;
+            this.zap_state = !this.zap_state;
+        }
+
+        if (this.zap_state) {
+            if (inputs.w) {
+                y = this.zap_speed;
+                this.zap_state = false;
+            }
+            if (inputs.s) {
+                y = -this.zap_speed;
+                this.zap_state = false;
+            }
+            if (inputs.a) {
+                x = -this.zap_speed;
+                this.zap_state = false;
+            }
+            if (inputs.d) {
+                x = this.zap_speed;
+                this.zap_state = false;
+            }
+            if (inputs.space) {
+                z = this.zap_speed;
+                this.zap_state = false;
+            }
+        } else {
+            // Things that are controlled by holding keys down.
+            // axis movement   
+            if (inputs.w) {
+                y += this.max_move_speed;
+                this.target_facing = 0.5 * Math.PI;
+            }
+            if (inputs.s) {
+                y -= this.max_move_speed;
+                this.target_facing = 1.5 * Math.PI;
+            }
+            if (inputs.a) {
+                x -= this.max_move_speed;
+                this.target_facing = Math.PI;
+            }
+            if (inputs.d) {
+                x += this.max_move_speed;
+                this.target_facing = 0;
+            }
+            if (inputs.space) {
+                z = 5;
+            }
+        }
     }
+
+    var walk_vel = new CANNON.Vec3(this.body.velocity.x, this.body.velocity.y, 0);
+
+
+
+    this.body.velocity.set(x, y, z);
+
+    // facing
+    this.body.quaternion.setFromAxisAngle(new CANNON.Vec3(0, 0, 1),
+            this.target_facing);
 }
 BoxCritter.prototype.updateView = function() {
     this.mesh.position.copy(this.body.position);
