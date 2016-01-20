@@ -1,76 +1,91 @@
 from unittest import TestCase
 
 
-from prolly import Brain, Var, Term, log, Rule, Conjunction
+from prolly import Brain
 
 
-class BrainTest(TestCase):
+def assertObjectSubsetIn(testcase, listing, obj):
+    for x in listing:
+        matches = True
+        for k,v in obj.items():
+            if x[k] != v:
+                matches = False
+                break
+        if matches:
+            return
+    testcase.fail('Expecting {0!r} to contain {1!r}'.format(listing, obj))
 
-    def test_basic_100percent(self):
+
+class SimpleBrainTest(TestCase):
+
+    def setUp(self):
+        self.brain = Brain()
+        rules = [
+            # rules
+            '(parent, P, C) if (mother, P, C)',
+            '(parent, P, C) if (father, P, C)',
+            '(sibling, X, Y) if (parent, Z, X) and (parent, Z, Y)',
+            # data
+            '(mother, mary, alicia)',
+            '(father, joseph, alicia)',
+            '(mother, mary, mike)',
+            '(father, joseph, mike)',
+            '(mother, rita, joseph)',
+        ]
+        for r in rules:
+            self.brain.add(r)
+
+    def test_truth_simple(self):
+        results = list(self.brain.query('(mother, mary, alicia)'))
+        self.assertEqual(len(results), 1)
+
+    def test_truth_conjunction(self):
+        results = list(self.brain.query('(sibling, mike, alicia)'))
+        self.assertEqual(len(results), 1)
+
+    def test_truth_false(self):
+        results = list(self.brain.query('(mother, mary, gonzo)'))
+        self.assertEqual(len(results), 0)
+
+    def test_var_simple(self):
         """
-        A brain can store facts and be queried for stuff.
+        You can find out the answer to things using variables.
         """
-        print ''
-        brain = Brain()
-        brain.addFact('mother_child', ['trudy', 'sally'])
-        results = list(brain.pyquery('mother_child', [Var('Mother'), Var('Child')]))
-        log('results', results)
-        self.assertEqual(len(results), 1, "Should list the one relationship")
-        self.assertEqual(results[0]['Mother'], 'trudy')
-        self.assertEqual(results[0]['Child'], 'sally')
+        results = list(self.brain.query('(mother, X, alicia)'))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]['X'], 'mary')
 
-    def test_complex1(self):
+    def test_var_1level(self):
+        results = list(self.brain.query('(parent, X, alicia)'))
+        self.assertEqual(len(results), 2)
+        assertObjectSubsetIn(self, results, {
+            'X': 'mary',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'joseph',
+        })
+
+    def test_var_sibling(self):
+        results = list(self.brain.query('(sibling, X, alicia)'))
+        self.assertEqual(len(results), 2)
+        assertObjectSubsetIn(self, results, {
+            'X': 'alicia',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'mike',
+        })
+
+    def test_var_multiple(self):
         """
-        A brain can store facts and be queried for related stuff.
+        You can use multiple variables.
         """
-        print ''
-        brain = Brain()
-        # brain.addFact('father_child', ['massimo', 'ridge'])
-        # brain.addFact('father_child', ['eric', 'thorne'])
-        # brain.addFact('father_child', ['thorne', 'alexandria'])
-
-        #brain.addFact('mother_child', ['stephanie', 'thorne'])
-        brain.addFact('mother_child', ['mommy', 'paco'])
-        brain.addFact('mother_child', ['mommy', 'jenny'])
-
-        # brain.addRule(Rule(
-        #     Term('parent_child', [Var('X'), Var('Y')]),
-        #     Term('father_child', [Var('X'), Var('Y')])
-        # ))
-
-        brain.addRule(Rule(
-            Term('parent_child', [Var('X'), Var('Y')]),
-            Term('mother_child', [Var('X'), Var('Y')])
-        ))
-
-        brain.addRule(Rule(
-            Term('sibling', [Var('X'), Var('Y')]),
-            Conjunction([
-                Term('parent_child', [Var('Z'), Var('X')]),
-                Term('parent_child', [Var('Z'), Var('Y')]),
-            ])
-        ))
-
-        # brain.addRule(Rule(
-        #     Term('ancestor', [Var('X'), Var('Y')]),
-        #     Term('parent_child', [Var('X'), Var('Y')]),
-        # ))
-        # brain.addRule(Rule(
-        #     Term('ancestor', [Var('X'), Var('Y')]),
-        #     Conjunction([
-        #         Term('parent_child', [Var('X'), Var('Z')]),
-        #         Term('ancestor', [Var('Z'), Var('Y')]),
-        #     ])
-        # ))
-
-        results = list(brain.pyquery('parent_child', [Term('mommy'), Var('Child')]))
-        log('results', results)
-        self.assertEqual(len(results), 2, "She has two kids")
-        self.assertEqual(results[0]['Child'], 'paco')
-        self.assertEqual(results[1]['Child'], 'jenny')
-
-        print ' '
-        # results = list(brain.pyquery('sibling', [Var('Sibling'), Term('paco')]))
-        # log('results', results)
-        # self.assertEqual(len(results), 2, "She has 2 siblings")
-
+        results = list(self.brain.query('(X, Y, alicia)'))
+        self.assertEqual(len(results), 2)
+        assertObjectSubsetIn(self, results, {
+            'X': 'father',
+            'Y': 'joseph',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'mother',
+            'Y': 'mary',
+        })

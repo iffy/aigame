@@ -1,118 +1,123 @@
-# Using https://curiosity-driven.org/prolog-interpreter#glue as an example implementation
-from functools import wraps
+import parsley
 from termcolor import colored
 
-level = 0
-def logmethod(f):
-    """
-    Log a normal method call
-    """
-    @wraps(f)
+grammar = '''
+tchar = letterOrDigit:x ?(x in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') -> x
+atom = letter:first <tchar*>:rest ?(first == first.lower()) -> Atom(first + rest)
+var = letter:first <tchar*>:rest ?(first == first.upper()) -> Var(first + rest)
+ws = ' '*
+
+simple_term = atom | var
+term = simple_term:x -> x
+    | '(' term_list:x ')' -> Term(*x)
+term_list = (term:first (ws ',' ws term)*:rest -> [first] + rest) | -> []
+
+and_list = (term:first (ws 'and' ws term)*:rest -> [first] + rest) | -> []
+
+rule = term:head ws 'if' ws and_list:body -> Rule(head, And(body))
+       | term:head ws 'if' ws term:body -> Rule(head, body)
+       | term:head -> Rule(head, TRUE)
+'''
+
+
+from functools import wraps
+
+call_count = 0
+
+def logTruthy(method):
+    @wraps(method)
     def func(self, *args, **kwargs):
-        global level
-        name = repr(self) + '.' + func.__name__
-        arg_string = map(repr, args)
-        for k,v in kwargs.items():
-            arg_string.append('{0}={1}'.format(k,v))
-        print '{0}{1}({2})'.format(
-            colored('|   '*level, attrs=['dark']),
-            name,
-            ', '.join(arg_string))
-        level += 1
-        result = f(self, *args, **kwargs)
-        level -= 1
-        print '{0}{1}'.format(
-            colored('|   '*level, attrs=['dark']),
-            colored(repr(result), 'cyan'))
-        return result
+        global call_count
+        call = '{cls}.{method} {self} {args}'.format(
+            cls=self.__class__.__name__,
+            method=method.__name__,
+            self=self,
+            args=args)
+        this_count = call_count
+        call_count += 1
+        print colored('{0}: {1}'.format(this_count, call), 'yellow', attrs=['dark'])
+        r = method(self, *args, **kwargs)
+        ret_string = '{count}: {call}\n  -> {r}'.format(
+            count=this_count, call=call, r=r)
+        if r:
+            print colored(ret_string, 'green')
+        else:
+            print colored(ret_string, attrs=['dark'])
+        return r
     return func
 
-def loggenmethod(f):
-    """
-    Log a generator-returning call
-    """
-    @wraps(f)
-    def func(self, *args, **kwargs):
-        global level
-        name = repr(self) + '.' + func.__name__
-        arg_string = map(str, args)
-        for k,v in kwargs.items():
-            arg_string.append('{0}={1}'.format(k,v))
-        prefix = '{0}({1})'.format(name, ', '.join(arg_string))
-        return GenLogger(prefix, f(self, *args, **kwargs))
-    return func
 
+class Atom(object):
 
-class GenLogger(object):
+    def __init__(self, value):
+        self.value = value
 
-    def __init__(self, prefix, iterator):
-        self.iterator = iterator
-        self.prefix = prefix
-        self.i = 0
+    def __repr__(self):
+        return 'Atom({0!r})'.format(self.value)
 
-    def __iter__(self):
+    def __str__(self):
+        return str(self.value)
+
+    @logTruthy
+    def match(self, other):
+        if isinstance(other, Atom):
+            if self.value == other.value:
+                return {self.value: other.value}
+        elif isinstance(other, Var):
+            return {other.name: self.value}
+        return {}
+
+    def normalizeVars(self, db):
         return self
 
-    def next(self):
-        global level
-        print '{pre}{i} {prefix}'.format(
-            pre=colored('|   '*level, attrs=['dark']),
-            prefix=self.prefix,
-            i=colored(self.i, 'yellow'))
-        level += 1
-        try:
-            result = self.iterator.next()
-            level -= 1
-            print '{pre}{i} {result} {prefix}'.format(
-                pre=colored('|   '*level, attrs=['dark']),
-                result=colored(result, 'cyan'),
-                prefix=self.prefix,
-                i=colored(self.i, 'yellow'))
-        except StopIteration:
-            level -= 1
-            print '{pre}{i}'.format(
-                pre=colored('|   '*level, attrs=['dark']),
-                i=colored(self.i, 'red'),
-                prefix=self.prefix,
-                stop=colored('END', 'red', attrs=['dark']))
-            raise
-            
-        self.i += 1
-        return result
+    def substitute(self, mapping):
+        return self
 
 
-def log(*args):
-    print '{0}{1}'.format(
-            colored('|   '*level, attrs=['dark']),
-            colored(' '.join(map(str, args)), attrs=['dark']))
+class Term(object):
 
+    def __init__(self, *args):
+        self.args = args
 
-def _mergeBindings(b1, b2):
-    """
-    Merge two sets of bindings.
+    @property
+    def arity(self):
+        return len(self.args)
 
-    @param b1: Accumulated result
-    @param b2: Results to merge in
-    """
-    # XXX explain this, eh?
-    if b1 is None or b2 is None:
-        return None
-    # start with the accumulated result
-    result = {k:v for k,v in b1.items()}
-    for k,v in b2.items():
-        other = result.get(k, None)
-        if other is not None:
-            sub = other.match(v)
-            if sub is None:
-                # conflict
-                log('CONFLICT')
-                return None
-            else:
-                for k,v in sub.items():
-                    result[k] = v
+    @logTruthy
+    def match(self, query, brain):
+        """
+        Return a dict whose keys are items in my args and values
+        are what my args should be changed to to match the given query.
+        """
+        match_mapping = {}
+        for me,q in zip(self.args, query.args):
+            m = me.match(q)
+            if not m:
+                # mismatch
+                return {}
+            match_mapping.update(m)
+        return match_mapping
+
+    @logTruthy
+    def substitute(self, mapping):
+        """
+        Create a new Term with my args replaced according to
+        the mapping.  Typically, the mapping is something
+        returned by my C{match} function.
+        """
+        return Term(*[x.substitute(mapping) for x in self.args])
+
+    def normalizeVars(self, db):
+        return Term(*[x.normalizeVars(db) for x in self.args])
+
+    def __repr__(self):
+        return 'Term{0!r}'.format(self.args)
+
+    def __str__(self):
+        if len(self.args) == 1:
+            return str(self.args[0])
         else:
-            result[k] = v
-    return result
+            return '({0})'.format(', '.join(map(str, self.args)))
 
 
 class Var(object):
@@ -121,126 +126,83 @@ class Var(object):
         self.name = name
 
     def __repr__(self):
-        return 'Var({0!r})'.format(self.name)
+        return '<Var({0!r}) {1}>'.format(self.name, id(self))
 
     def __str__(self):
         return self.name
 
-    @logmethod
-    def match(self, other):
-        """
-        Return a dictionary mapping this Var to other if
-        they are different.
-        """
-        # XXX explain this, eh?
-        bindings = {}
-        if other != self:
-            bindings[self] = other
-        return bindings
+    def match(self, query, brain=None):
+        print 'VAR MATCH', self, query
+        return {self:query}
 
-    @logmethod
-    def sub(self, bindings):
-        """
-        Return what I represent in the given bindings.
-        """
-        # XXX explain this, eh?
-        value = bindings.get(self)
-        if value:
-            return value.sub(bindings)
-        log('no matching binding found')
-        return self
+    @logTruthy
+    def substitute(self, mapping):
+        print 'mapping', mapping, self
+        return mapping.get(self, self)
 
-    def value(self):
-        return self.name
+    def normalizeVars(self, db):
+        return db.setdefault(self.name, self)
 
 
-class Term(object):
+class Conflict(Exception):
+    pass
 
-    def __init__(self, functor, args=None):
-        self.functor = functor
-        self.args = args or []
+class And(object):
+
+    def __init__(self, parts):
+        self.parts = parts
 
     def __repr__(self):
-        if self.args:
-            return 'Term({0!r}, {1!r})'.format(self.functor, self.args)
-        else:
-            return 'Term({0!r})'.format(self.functor)
+        return 'And({0!r})'.format(self.parts)
 
     def __str__(self):
-        if self.args:
-            return '{0}({1})'.format(self.functor, ', '.join(map(str, self.args)))
-        else:
-            return self.functor
+        return ' and '.join(map(str, self.parts))
 
-    def value(self):
-        return self.functor
+    @logTruthy
+    def substitute(self, mapping):
+        """
+        Make a copy of myself with variables changed.
+        """
+        return And([part.substitute(mapping) for part in self.parts])
 
-    def match(self, other):
-        # XXX explain this, eh?
-        if isinstance(other, Term):
-            if self.functor != other.functor:
-                return None
-            if len(self.args) != len(other.args):
-                return None
-            d = []
-            for (a,b) in zip(self.args, other.args):
-                d.append(a.match(b))
-            return reduce(_mergeBindings, d, {})
-        return other.match(self)
+    def normalizeVars(self, db):
+        return And([x.normalizeVars(db) for x in self.parts])
 
-    @logmethod
-    def sub(self, bindings):
-        # XXX explain this, eh?
-        return Term(self.functor, [x.sub(bindings) for x in self.args])
+    def findMatches(self, brain):
+        """
+        Find all the matches
+        """
+        return self._findPartialMatches(self.parts, {}, brain)
 
-    def query(self, brain):
-        for x in brain.query(self):
-            yield x
+    def _findPartialMatches(self, args, context, brain):
+        print '_findPartialMatches', args, brain
+        arg = args[0].substitute()
+        rest = args[1:]
+        for x in brain.parsedQuery(arg):
+            print 'x', x
+            if rest:
+                print 'rest', rest
+                for y in self._findPartialMatches(rest, brain):
+                    try:
+                        v = self._mergeWithoutOverwriting(x, y)
+                        print 'yielding', v
+                        yield v
+                    except Conflict:
+                        pass
+            else:
+                print 'no rest, yielding', x
+                yield x
 
-
-class TRUE(Term):
-
-    def __init__(self):
-        self.functor = None
-        self.args = []
-
-    def sub(self, bindings):
-        return self
-
-    def query(self, brain):
-        yield self
-
-    def __repr__(self):
-        return 'TRUE()'
-
-    def __str__(self):
-        return 'True'
-
-    def value(self):
-        return True
-
-
-class Trueness(Term):
-
-    def __init__(self, trueness=1):
-        self.functor = None
-        self.args = []
-        self.trueness = trueness
-
-    def sub(self, bindings):
-        return self
-
-    def query(self, brain):
-        yield self
-
-    def __repr__(self):
-        return 'Trueness({0!r})'.format(self.trueness)
-
-    def __str__(self):
-        return 'True{0}'.format(self.trueness)
-
-    def value(self):
-        return self.trueness
+    def _mergeWithoutOverwriting(self, a, b):
+        """
+        Merge every new value in b into a
+        """
+        a_copy = a.copy()
+        for k, v in b.items():
+            if k in a_copy and a_copy[k] != v:
+                raise Conflict('Not the same', k, a_copy[k], v)
+            a_copy[k] = v
+        return a_copy
 
 
 class Rule(object):
@@ -250,100 +212,84 @@ class Rule(object):
         self.body = body
 
     def __repr__(self):
-        return '{0!r} :- {1!r}.'.format(self.head, self.body)
+        return 'Rule({0!r}, {1!r})'.format(self.head, self.body)
 
     def __str__(self):
-        return '{0} :- {1}.'.format(str(self.head), str(self.body))
+        return '{0} if {1}'.format(self.head, self.body)
+
+    def normalizeVars(self, db=None):
+        db = db or {}
+        head = self.head.normalizeVars(db)
+        body = self.body.normalizeVars(db)
+        return Rule(head, body)
 
 
-class Conjunction(Term):
+class _TRUE(Term):
 
-    def __init__(self, args):
-        self.functor = None
-        self.args = args
-
-    @logmethod
-    def sub(self, bindings):
-        # XXX explain this, eh?
-        return Conjunction([x.sub(bindings) for x in self.args])
-
-    @loggenmethod
-    def query(self, brain):
-        # XXX explain this, eh?
-        return self._getSolutions(brain, {}, self.args)
-
-    def _getSolutions(self, brain, bindings, args):
-        if not args:
-            log('no args')
-            yield self.sub(bindings)
-        else:
-            arg = args[0]
-            log('arg', arg)
-            log('bindings', bindings)
-            goal = arg.sub(bindings)
-            log('goal', goal)
-            for item in brain.query(goal):
-                log('item', item)
-                match = arg.match(item)
-                log('match', match)
-                unified = _mergeBindings(match, bindings)
-                log('unified', unified)
-                if unified:
-                    for x in self._getSolutions(brain, unified, args[1:]):
-                        yield x
+    def __str__(self):
+        return 'true'
 
     def __repr__(self):
-        return ', '.join(map(repr, self.args))
+        return '<TRUE>'
 
-    def __str__(self):
-        return ', '.join(map(str, self.args))
+    def substitute(self, mapping):
+        return self
+
+    def normalizeVars(self, db):
+        return self
+
+    def findMatches(self, brain):
+        yield {}
+
+
+TRUE = _TRUE()
+
+parser = parsley.makeGrammar(grammar, {
+    'Atom': Atom,
+    'Term': Term,
+    'Var': Var,
+    'Rule': Rule,
+    'And': And,
+    'TRUE': TRUE,
+})
 
 
 class Brain(object):
 
     def __init__(self):
-        self.rules = []
+        self._rules = []
 
-    def addFact(self, functor, args):
-        term_args = []
-        for arg in args:
-            if not isinstance(arg, Term):
-                arg = Term(arg)
-            term_args.append(arg)
-
-        body = TRUE()
-        self.addRule(Rule(Term(functor, term_args), body))
-
-    def addRule(self, rule):
-        self.rules.append(rule)
-
-    @loggenmethod
-    def query(self, goal):
-        for rule in self.rules:
-            match = rule.head.match(goal)
-            if match:
-                head = rule.head.sub(match)
-                log('head', head)
-                body = rule.body.sub(match)
-                log('body', body)
-                for item in body.query(self):
-                    yield head.sub(body.match(item))
-
-    @loggenmethod
-    def pyquery(self, functor, args):
+    def add(self, rule):
         """
-        Query, but return native Python types instead of classes/objects
+        Add a fact to this brain.
         """
-        goal = Term(functor, args)
-        for x in self.query(goal):
-            matched = goal.match(x)
-            ret = {}
-            for k,v in matched.items():
-                ret[k.value()] = v.value()
-            yield ret
+        print 'ADD', rule
+        rule = parser(rule).rule().normalizeVars()
+        self._rules.append(rule)
+
+    def query(self, query):
+        """
+        Query the brain.
+        """
+        print 'query', query
+        query = parser(query).rule().head
+        print 'parse', query
+        print repr(query)
+        return self.parsedQuery(query)
+
+    def parsedQuery(self, query):
+        for rule in self._rules:
+            print ''
+            print 'RULE', rule
+            head_match = rule.head.match(query, self)
+            if head_match:
+                print 'head_match', head_match
+                mapped_body = rule.body.substitute(head_match)
+                print 'mapped_body', mapped_body
+                for match in mapped_body.findMatches(self):
+                    print 'match', match
+                    match.update(head_match)
+                    yield match
+            
 
 
-# importance of a fact
-# perceived truthfulness of a fact
-# mutation of a fact
-# forgetting a fact
