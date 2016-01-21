@@ -24,13 +24,15 @@ class SimpleBrainTest(TestCase):
             # rules
             '(parent, P, C) if (mother, P, C)',
             '(parent, P, C) if (father, P, C)',
-            '(sibling, X, Y) if (parent, Z, X) and (parent, Z, Y)',
+            '(grandparent, G, C) if (parent, G, P) and (parent, P, C)',
+            '(sibling, X, Y) if (parent, P, X) and (parent, P, Y)',
             # data
             '(mother, mary, alicia)',
             '(father, joseph, alicia)',
             '(mother, mary, mike)',
             '(father, joseph, mike)',
             '(mother, rita, joseph)',
+
         ]
         for r in rules:
             self.brain.add(r)

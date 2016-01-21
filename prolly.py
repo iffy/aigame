@@ -15,7 +15,6 @@ term_list = (term:first (ws ',' ws term)*:rest -> [first] + rest) | -> []
 and_list = (term:first (ws 'and' ws term)*:rest -> [first] + rest) | -> []
 
 rule = term:head ws 'if' ws and_list:body -> Rule(head, And(body))
-       | term:head ws 'if' ws term:body -> Rule(head, body)
        | term:head -> Rule(head, TRUE)
 '''
 
@@ -172,11 +171,11 @@ class And(object):
         """
         Find all the matches
         """
-        return self._findPartialMatches(self.parts, {}, brain)
+        return self._findPartialMatches(self.parts, brain)
 
-    def _findPartialMatches(self, args, context, brain):
+    def _findPartialMatches(self, args, brain):
         print '_findPartialMatches', args, brain
-        arg = args[0].substitute()
+        arg = args[0]
         rest = args[1:]
         for x in brain.parsedQuery(arg):
             print 'x', x
@@ -283,11 +282,10 @@ class Brain(object):
             print 'RULE', rule
             head_match = rule.head.match(query, self)
             if head_match:
-                print 'head_match', head_match
                 mapped_body = rule.body.substitute(head_match)
                 print 'mapped_body', mapped_body
                 for match in mapped_body.findMatches(self):
-                    print 'match', match
+                    print 'BODY match', match
                     match.update(head_match)
                     yield match
             
