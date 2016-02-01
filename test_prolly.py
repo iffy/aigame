@@ -5,15 +5,20 @@ from prolly import Brain
 
 
 def assertObjectSubsetIn(testcase, listing, obj):
-    for x in listing:
+    is_match = False
+    for item in listing:
         matches = True
-        for k,v in obj.items():
-            if x[k] != v:
-                matches = False
-                break
+        try:
+            for k,v in obj.items():
+                if item[k] != v:
+                    matches = False
+                    break
+        except KeyError:
+            matches = False
         if matches:
-            return
-    testcase.fail('Expecting {0!r} to contain {1!r}'.format(listing, obj))
+            is_match = True
+    if not is_match:
+        testcase.fail('Expecting {0!r} to contain {1!r}'.format(listing, obj))
 
 
 class SimpleBrainTest(TestCase):
@@ -24,9 +29,12 @@ class SimpleBrainTest(TestCase):
             # rules
             '(parent, P, C) if (mother, P, C)',
             '(parent, P, C) if (father, P, C)',
+            '(daughter, P, C) if (parent, P, C) and (female, C)',
+            '(son, P, C) if (parent, P, C) and (male, C)',
             '(grandparent, G, C) if (parent, G, P) and (parent, P, C)',
             '(sibling, X, Y) if (parent, P, X) and (parent, P, Y)',
             # data
+            '(female, alicia)',
             '(mother, mary, alicia)',
             '(father, joseph, alicia)',
             '(mother, mary, mike)',
@@ -36,18 +44,6 @@ class SimpleBrainTest(TestCase):
         ]
         for r in rules:
             self.brain.add(r)
-
-    def test_truth_simple(self):
-        results = list(self.brain.query('(mother, mary, alicia)'))
-        self.assertEqual(len(results), 1)
-
-    def test_truth_conjunction(self):
-        results = list(self.brain.query('(sibling, mike, alicia)'))
-        self.assertEqual(len(results), 1)
-
-    def test_truth_false(self):
-        results = list(self.brain.query('(mother, mary, gonzo)'))
-        self.assertEqual(len(results), 0)
 
     def test_var_simple(self):
         """
@@ -69,7 +65,7 @@ class SimpleBrainTest(TestCase):
 
     def test_var_sibling(self):
         results = list(self.brain.query('(sibling, X, alicia)'))
-        self.assertEqual(len(results), 2)
+        self.assertEqual(len(results), 2, results)
         assertObjectSubsetIn(self, results, {
             'X': 'alicia',
         })
@@ -77,12 +73,22 @@ class SimpleBrainTest(TestCase):
             'X': 'mike',
         })
 
+    def test_var_conjunction(self):
+        """
+        You can use conjunctions
+        """
+        results = list(self.brain.query('(daughter, mary, X)'))
+        self.assertEqual(len(results), 1)
+        assertObjectSubsetIn(self, results, {
+            'X': 'alicia',
+        })
+
     def test_var_multiple(self):
         """
         You can use multiple variables.
         """
-        results = list(self.brain.query('(X, Y, alicia)'))
-        self.assertEqual(len(results), 2)
+        results = list(self.brain.query('(X, Y, mike)'))
+        self.assertEqual(len(results), 7, results)
         assertObjectSubsetIn(self, results, {
             'X': 'father',
             'Y': 'joseph',
@@ -90,4 +96,24 @@ class SimpleBrainTest(TestCase):
         assertObjectSubsetIn(self, results, {
             'X': 'mother',
             'Y': 'mary',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'grandparent',
+            'Y': 'rita',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'parent',
+            'Y': 'joseph',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'parent',
+            'Y': 'mary',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'sibling',
+            'Y': 'alicia',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': 'sibling',
+            'Y': 'mike',
         })
