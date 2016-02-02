@@ -368,8 +368,6 @@ class Brain(object):
                     log('   ret', ret)
                     yield ret
                 else:
-                    #mapped_body = rule.body.substitute(mapping)
-                    #log('  MAKING', repr(mapped_body))
                     for match in rule.body.query(self):
                         log(colored('\nQUERY {0!r}'.format(query), attrs=['dark']))
                         log(colored('  RULE  {0!r}'.format(rule), attrs=['dark']))
@@ -378,8 +376,8 @@ class Brain(object):
                         log('  rev    ', rev_map)
                         log('  match  ', match)
                         
-                        ret = {}
                         # convert match back using mapping
+                        ret = {}
                         try:
                             for k,v in list(rev_map.items()):
                                 if isinstance(v, Var):
@@ -393,27 +391,9 @@ class Brain(object):
                         except Conflict as e:
                             log('  CONFLICT', e)
                             continue
-
-                                
+        
                         log('  ret    ', ret)
                         yield ret
 
-                        # rmatch = {}
-                        # for k,v in match.items():
-                        #     if isinstance(k, Var):
-                        #         rmatch[rev_map[k]] = v
-                        # log('  rmatch ', rmatch)
-
-                        # merge match with existing
-                        # merged = _mergeWithoutOverwriting(mapping, match)
-                        # log('  merged ', merged)
-                        
-                        # trim the mapping
-                        # for k,v in list(match.items()):
-                        #     if k not in mapping.values():
-                        #         match.pop(k)
-                        #     elif not isinstance(k, Var):
-                        #         match.pop(k)
-                        # yield match
 
 
