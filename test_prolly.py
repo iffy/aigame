@@ -21,7 +21,56 @@ def assertObjectSubsetIn(testcase, listing, obj):
         testcase.fail('Expecting {0!r} to contain {1!r}'.format(listing, obj))
 
 
-class SimpleBrainTest(TestCase):
+class BrainTest(TestCase):
+
+    def setUp(self):
+        Var.count = 0
+
+    def test_matchterm(self):
+        """
+        Variables should match whole terms.
+        """
+        brain = Brain()
+        rules = [
+            '(X, good) if (john, said, X)',
+            '(john, said, hello)',
+            '(john, said, (cats, eat, food))',
+        ]
+        map(brain.add, rules)
+        results = list(brain.query('(Z, good)'))
+        assertObjectSubsetIn(self, results, {
+            'Z': 'hello',
+        })
+        assertObjectSubsetIn(self, results, {
+            'Z': ('cats', 'eat', 'food'),
+        })
+        self.assertEqual(len(results), 2)
+
+    def test_matchterm_deep(self):
+        """
+        Variables should match whole terms at any depth.
+        """
+        brain = Brain()
+        rules = [
+            '(X, good) if (john, said, X)',
+            '(X, rad) if (X, good)',
+            '(john, said, hello)',
+            '(john, said, (cats, drink, milk))',
+        ]
+        map(brain.add, rules)
+        results = list(brain.query('(X, rad)'))
+        assertObjectSubsetIn(self, results, {
+            'X': 'hello',
+        })
+        assertObjectSubsetIn(self, results, {
+            'X': ('cats', 'drink', 'milk'),
+        })
+
+
+class ScenarioBrainTest(TestCase):
+    """
+    Tests based on the same set of rules.
+    """
 
     def setUp(self):
         Var.count = 0

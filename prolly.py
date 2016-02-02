@@ -89,7 +89,7 @@ class Atom(object):
     def __eq__(self, other):
         if isinstance(other, Atom):
             return self.value == other.value
-        return False
+        return NotImplemented
 
     def __ne__(self, other):
         return not(self == other)
@@ -113,7 +113,7 @@ class Atom(object):
     def substitute(self, mapping):
         return self
 
-    def getValue(self):
+    def humanValue(self):
         return self.value
 
     def listVars(self):
@@ -141,6 +141,12 @@ class Term(object):
         Generate the bindings keys are items in my args and values
         are what my args should be changed to to match the given other.
         """
+        if isinstance(other, Term):
+            return self.matches_Term(other, brain)
+        elif isinstance(other, Var):
+            return self.matches_Var(other, brain)
+
+    def matches_Term(self, other, brain):
         if self.arity != other.arity:
             # doesn't match the number of args
             return
@@ -153,6 +159,9 @@ class Term(object):
                 yield combineDicts(matches)
             except Conflict:
                 pass
+
+    def matches_Var(self, other, brain):
+        yield {self: other}
 
     def substitute(self, mapping):
         """
@@ -169,7 +178,10 @@ class Term(object):
         ret = []
         for arg in self.args:
             ret.extend(arg.listVars())
-        return ret 
+        return ret
+
+    def humanValue(self):
+        return tuple([x.humanValue() for x in self.args])
 
     def __repr__(self):
         return 'Term{0!r}'.format(self.args)
@@ -205,7 +217,7 @@ class Var(object):
     def listVars(self):
         return [self]
 
-    def getValue(self):
+    def humanValue(self):
         return self.name
 
 
@@ -313,7 +325,7 @@ parser = parsley.makeGrammar(grammar, {
 
 
 def humanize(d):
-    return {k.getValue():v.getValue() for k,v in d.items()}
+    return {k.humanValue():v.humanValue() for k,v in d.items()}
 
 
 class Brain(object):
