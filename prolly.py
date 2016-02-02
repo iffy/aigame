@@ -51,13 +51,6 @@ def _mergeWithoutOverwriting(a, b):
         a_copy[k] = v
     return a_copy
 
-def makeReverseMapping(original, newmapping):
-    """
-    Turn stuff in newmapping back into values specified in original.
-    """
-    print 'REVERSE', original
-    print '       ', newmapping
-
 
 def logTruthy(method):
     @wraps(method)
@@ -91,12 +84,15 @@ class Atom(object):
         return '<{0}>'.format(self.value)
 
     def __str__(self):
-        return str(self.value)
+        return repr(self)
 
     def __eq__(self, other):
         if isinstance(other, Atom):
             return self.value == other.value
         return False
+
+    def __ne__(self, other):
+        return not(self == other)
 
     def __hash__(self):
         return hash(self.value)
@@ -109,7 +105,7 @@ class Atom(object):
             if self.value == other.value:
                 yield {other: self}
         elif isinstance(other, Var):
-            yield {other: self}
+            yield {self: other}
 
     def normalizeVars(self, db):
         return self
@@ -179,10 +175,7 @@ class Term(object):
         return 'Term{0!r}'.format(self.args)
 
     def __str__(self):
-        if len(self.args) == 1:
-            return str(self.args[0])
-        else:
-            return '({0})'.format(', '.join(map(str, self.args)))
+        return '({0})'.format(', '.join(map(str, self.args)))
 
 
 class Var(object):
@@ -339,11 +332,11 @@ class Brain(object):
         """
         Query the brain.
         """
-        print 'query', query
+        log('query', query)
         query = parser(query).rule().normalizeVars().head
-        print 'parsed -> ', repr(query)
+        log('parsed -> ', repr(query))
         for match in self.parsedQuery(query):
-            print '**', humanize(match)
+            log(colored('** {0}'.format(humanize(match)), 'cyan'))
             ret = humanize(match)
             yield ret
 
@@ -371,20 +364,56 @@ class Brain(object):
                 log('  FOR', mapping)
                 if isinstance(rule.body, _TRUE):
                     log('  TRUE', mapping)
-                    yield mapping
+                    ret = reverseDict(mapping)
+                    log('   ret', ret)
+                    yield ret
                 else:
-                    mapped_body = rule.body.substitute(mapping)
-                    log('  MAKING', repr(mapped_body))
-                    for match in mapped_body.query(self):
+                    #mapped_body = rule.body.substitute(mapping)
+                    #log('  MAKING', repr(mapped_body))
+                    for match in rule.body.query(self):
+                        log(colored('\nQUERY {0!r}'.format(query), attrs=['dark']))
+                        log(colored('  RULE  {0!r}'.format(rule), attrs=['dark']))
                         log('  mapping', mapping)
+                        rev_map = reverseDict(mapping)
+                        log('  rev    ', rev_map)
                         log('  match  ', match)
                         
+                        ret = {}
+                        # convert match back using mapping
+                        try:
+                            for k,v in list(rev_map.items()):
+                                if isinstance(v, Var):
+                                    match_v = match[v]
+                                    if isinstance(k, Var):
+                                        ret[k] = match_v
+                                    elif match_v != k:
+                                        raise Conflict("Can't merge", rev_map, match)
+                                elif isinstance(k, Var):
+                                    ret[k] = v
+                        except Conflict as e:
+                            log('  CONFLICT', e)
+                            continue
+
+                                
+                        log('  ret    ', ret)
+                        yield ret
+
+                        # rmatch = {}
+                        # for k,v in match.items():
+                        #     if isinstance(k, Var):
+                        #         rmatch[rev_map[k]] = v
+                        # log('  rmatch ', rmatch)
+
+                        # merge match with existing
+                        # merged = _mergeWithoutOverwriting(mapping, match)
+                        # log('  merged ', merged)
+                        
                         # trim the mapping
-                        for k,v in list(match.items()):
-                            if k not in mapping.values():
-                                match.pop(k)
-                            elif not isinstance(k, Var):
-                                match.pop(k)
-                        yield match
+                        # for k,v in list(match.items()):
+                        #     if k not in mapping.values():
+                        #         match.pop(k)
+                        #     elif not isinstance(k, Var):
+                        #         match.pop(k)
+                        # yield match
 
 

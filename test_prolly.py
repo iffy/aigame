@@ -1,7 +1,7 @@
 from unittest import TestCase
 
 
-from prolly import Brain
+from prolly import Brain, Var
 
 
 def assertObjectSubsetIn(testcase, listing, obj):
@@ -24,6 +24,7 @@ def assertObjectSubsetIn(testcase, listing, obj):
 class SimpleBrainTest(TestCase):
 
     def setUp(self):
+        Var.count = 0
         self.brain = Brain()
         rules = [
             # rules
