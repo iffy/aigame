@@ -78,7 +78,7 @@ class SimpleBrainTest(TestCase):
         You can use conjunctions
         """
         results = list(self.brain.query('(daughter, mary, X)'))
-        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results), 1, results)
         assertObjectSubsetIn(self, results, {
             'X': 'alicia',
         })

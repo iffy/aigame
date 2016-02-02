@@ -1,4 +1,5 @@
 import parsley
+import itertools
 from termcolor import colored
 
 grammar = '''
@@ -33,12 +34,30 @@ def _mergeWithoutOverwriting(a, b):
     """
     Merge every new value in b into a
     """
-    a_copy = a.copy()
-    for k, v in b.items():
+    a_copy = {}
+    b_copy = {k:v for k,v in b.items()}
+    for k,v in a.items():
+        if v in b_copy:
+            a_copy[k] = b_copy.pop(v)
+        else:
+            a_copy[k] = v
+    for k, v in b_copy.items():
         if k in a_copy and a_copy[k] != v:
-            raise Conflict('Not the same', k, a_copy[k], v)
+            if a_copy[k] in b_copy:
+                a_copy[k] = b_copy[a_copy[k]]
+                continue
+            else:
+                raise Conflict('Not the same merging', a, b, k)
         a_copy[k] = v
     return a_copy
+
+def makeReverseMapping(original, newmapping):
+    """
+    Turn stuff in newmapping back into values specified in original.
+    """
+    print 'REVERSE', original
+    print '       ', newmapping
+
 
 def logTruthy(method):
     @wraps(method)
@@ -69,21 +88,28 @@ class Atom(object):
         self.value = value
 
     def __repr__(self):
-        return 'Atom({0!r})'.format(self.value)
+        return '<{0}>'.format(self.value)
 
     def __str__(self):
         return str(self.value)
 
-    def match(self, other):
+    def __eq__(self, other):
+        if isinstance(other, Atom):
+            return self.value == other.value
+        return False
+
+    def __hash__(self):
+        return hash(self.value)
+
+    def matches(self, other, brain):
         """
-        Return a dictionary that maps 
+        Generate the bindings that map other to self.
         """
         if isinstance(other, Atom):
             if self.value == other.value:
-                return {self: other}
+                yield {other: self}
         elif isinstance(other, Var):
-            return {other: self}
-        return {}
+            yield {other: self}
 
     def normalizeVars(self, db):
         return self
@@ -98,6 +124,13 @@ class Atom(object):
         return []
 
 
+def combineDicts(dicts):
+    ret = {}
+    for d in dicts:
+        ret = _mergeWithoutOverwriting(ret, d)
+    return ret
+
+
 class Term(object):
 
     def __init__(self, *args):
@@ -107,22 +140,23 @@ class Term(object):
     def arity(self):
         return len(self.args)
 
-    def match(self, query, brain):
+    def matches(self, other, brain):
         """
-        Return a dict whose keys are items in my args and values
-        are what my args should be changed to to match the given query.
+        Generate the bindings keys are items in my args and values
+        are what my args should be changed to to match the given other.
         """
-        match_mapping = {}
-        if self.arity != query.arity:
+        if self.arity != other.arity:
             # doesn't match the number of args
-            return {}
-        for me,q in zip(self.args, query.args):
-            m = me.match(q)
-            if not m:
-                # mismatch
-                return {}
-            match_mapping.update(m)
-        return match_mapping
+            return
+        match_gens = []
+        for me, q in zip(self.args, other.args):
+            match_gens.append(me.matches(q, brain))
+
+        for matches in itertools.product(*match_gens):
+            try:
+                yield combineDicts(matches)
+            except Conflict:
+                pass
 
     def substitute(self, mapping):
         """
@@ -153,17 +187,21 @@ class Term(object):
 
 class Var(object):
 
+    count = 0
+
     def __init__(self, name):
         self.name = name
+        Var.count += 1
+        self.number = Var.count
 
     def __repr__(self):
-        return '<Var{0} {1}>'.format(self.name, hex(id(self)))
+        return '<{0}.{1}>'.format(self.name, self.number)
 
     def __str__(self):
         return self.name
 
-    def match(self, query, brain=None):
-        return {self:query}
+    def matches(self, other, brain):
+        yield {self: other}
 
     def substitute(self, mapping):
         return mapping.get(self, self)
@@ -201,21 +239,26 @@ class And(object):
     def normalizeVars(self, db):
         return And([x.normalizeVars(db) for x in self.parts])
 
-    def findMatches(self, brain):
+    def query(self, brain):
         """
-        Find all the matches
+        Find all the matches for a query.
         """
-        return self._findPartialMatches(self.parts, brain)
+        return self._partialQuery(self.parts, brain)
 
-    def _findPartialMatches(self, args, brain):
+    def _partialQuery(self, args, brain):
         head = args[0]
         tail = args[1:]
         for match in brain.parsedQuery(head):
             if tail:
                 mapped_tail = [x.substitute(match) for x in tail]
-                for tail_match in self._findPartialMatches(mapped_tail, brain):
-                    full_match = match.copy()
-                    full_match.update(tail_match)
+                for tail_match in self._partialQuery(mapped_tail, brain):
+                    try:
+                        full_match = _mergeWithoutOverwriting(match, tail_match)
+                    except Conflict:
+                        log('  conflict')
+                        log('  match', match)
+                        log('  tail ', tail_match)
+                        continue
                     yield full_match
             else:
                 yield match
@@ -252,7 +295,7 @@ class Rule(object):
 class _TRUE(Term):
 
     def __str__(self):
-        return 'true'
+        return 'true/0'
 
     def __repr__(self):
         return '<TRUE>'
@@ -280,15 +323,6 @@ def humanize(d):
     return {k.getValue():v.getValue() for k,v in d.items()}
 
 
-def reduceMatchToQuery(match, query):
-    """
-    Reduce the elemtns in a match to the variables in a query.
-    """
-    var_names = [x.name for x in query.listVars()]
-    return {k:v for k,v in match.items() if k in var_names}
-
-
-
 class Brain(object):
 
     def __init__(self):
@@ -307,47 +341,50 @@ class Brain(object):
         """
         print 'query', query
         query = parser(query).rule().normalizeVars().head
-        print 'parsed -> ', query
-        found = set()
+        print 'parsed -> ', repr(query)
         for match in self.parsedQuery(query):
             print '**', humanize(match)
-            ret = reduceMatchToQuery(humanize(match), query)
-            h = tuple(ret.items())
-            if h in found:
-                continue
-            found.add(h)
+            ret = humanize(match)
             yield ret
+
+    def unique(self, gen):
+        encountered = set()
+        for x in gen:
+            h = hash(tuple(sorted(x.items())))
+            if h in encountered:
+                continue
+            encountered.add(h)
+            yield x
 
     def parsedQuery(self, query):
         """
         Query the brain using an already-parsed-into-python-objects
         query.
         """
-        encountered = set()
+        return self.unique(self._parsedQuery(query))
+
+    def _parsedQuery(self, query):
         for rule in self._rules:
-            mapping = rule.head.match(query, self)
-            if not mapping:
-                continue
-
-            h = (rule,) + tuple(sorted(humanize(mapping).items()))
-            if h in encountered:
-                print 'SKIP DUPE', rule, mapping
-                continue
-            encountered.add(h)
-
-            log('\nQUERY', query)
-            log('  MATCHES', rule)
-            log('  FOR', humanize(mapping))
-            mapped_body = rule.body.substitute(mapping)
-            log('  MAKING', mapped_body)
-            if isinstance(mapped_body, _TRUE):
-                log('  TRUE', mapping)
-                yield mapping
-            else:
-                for match in mapped_body.findMatches(self):
-                    log('  match', match)
-                    res = _mergeWithoutOverwriting(mapping, match)
-                    log('  res', res)
-                    yield res
+            for mapping in rule.head.matches(query, self):
+                log('\nQUERY', repr(query))
+                log('  MATCHES', repr(rule))
+                log('  FOR', mapping)
+                if isinstance(rule.body, _TRUE):
+                    log('  TRUE', mapping)
+                    yield mapping
+                else:
+                    mapped_body = rule.body.substitute(mapping)
+                    log('  MAKING', repr(mapped_body))
+                    for match in mapped_body.query(self):
+                        log('  mapping', mapping)
+                        log('  match  ', match)
+                        
+                        # trim the mapping
+                        for k,v in list(match.items()):
+                            if k not in mapping.values():
+                                match.pop(k)
+                            elif not isinstance(k, Var):
+                                match.pop(k)
+                        yield match
 
 
