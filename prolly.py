@@ -1,10 +1,30 @@
 import parsley
 import itertools
+from decimal import Decimal
 from termcolor import colored
 
 grammar = '''
 tchar = letterOrDigit:x ?(x in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') -> x
-atom = letter:first <tchar*>:rest ?(first == first.lower()) -> Atom(first + rest)
+
+#----------------------------
+# borrowed from http://parsley.readthedocs.org/en/latest/tutorial2.html
+digits = <digit*>
+digit1_9 = :x ?(x in '123456789') -> x
+
+intPart = (digit1_9:first digits:rest -> first + rest) | digit
+floatPart :sign :ds = <('.' digits)>:tail
+                     -> Decimal(sign + ds + tail)
+number = ('-' | -> ''):sign (intPart:ds (floatPart(sign ds)
+                                               | -> int(sign + ds)))
+#----------------------------
+
+atom = 
+    # number
+    ( number:x -> Atom(x) )
+
+    # string
+    | letter:first <tchar*>:rest ?(first == first.lower()) -> Atom(first + rest)
+
 var = letter:first <tchar*>:rest ?(first == first.upper()) -> Var(first + rest)
 ws = ' '*
 
@@ -110,6 +130,9 @@ class Atom(object):
     def normalizeVars(self, db):
         return self
 
+    def convertSpecialTerms(self, brain):
+        return self
+
     def substitute(self, mapping):
         return self
 
@@ -169,10 +192,17 @@ class Term(object):
         the mapping.  Typically, the mapping is something
         returned by my C{match} function.
         """
-        return Term(*[x.substitute(mapping) for x in self.args])
+        return self.__class__(*[x.substitute(mapping) for x in self.args])
+
+    def query(self, brain):
+        return brain.parsedQuery(self)
 
     def normalizeVars(self, db):
         return Term(*[x.normalizeVars(db) for x in self.args])
+
+    def convertSpecialTerms(self, brain):
+        return brain.convertToSpecialTerm(
+            self.__class__(*[x.convertSpecialTerms(brain) for x in self.args]))
 
     def listVars(self):
         ret = []
@@ -184,7 +214,7 @@ class Term(object):
         return tuple([x.humanValue() for x in self.args])
 
     def __repr__(self):
-        return 'Term{0!r}'.format(self.args)
+        return '{0}{1!r}'.format(self.__class__.__name__, self.args)
 
     def __str__(self):
         return '({0})'.format(', '.join(map(str, self.args)))
@@ -213,6 +243,9 @@ class Var(object):
 
     def normalizeVars(self, db):
         return db.setdefault(self.name, self)
+
+    def convertSpecialTerms(self, brain):
+        return self
 
     def listVars(self):
         return [self]
@@ -244,6 +277,9 @@ class And(object):
     def normalizeVars(self, db):
         return And([x.normalizeVars(db) for x in self.parts])
 
+    def convertSpecialTerms(self, brain):
+        return And([x.convertSpecialTerms(brain) for x in self.parts])
+
     def query(self, brain):
         """
         Find all the matches for a query.
@@ -253,7 +289,9 @@ class And(object):
     def _partialQuery(self, args, brain):
         head = args[0]
         tail = args[1:]
-        for match in brain.parsedQuery(head):
+        print 'AND head', head
+        print 'AND tail', tail
+        for match in head.query(brain):
             if tail:
                 mapped_tail = [x.substitute(match) for x in tail]
                 for tail_match in self._partialQuery(mapped_tail, brain):
@@ -293,9 +331,16 @@ class Rule(object):
         body = self.body.normalizeVars(db)
         return Rule(head, body)
 
+    def convertSpecialTerms(self, brain):
+        head = self.head.convertSpecialTerms(brain)
+        body = self.body.convertSpecialTerms(brain)
+        return Rule(head, body)
+
     def listVars(self):
         return self.head.listVars() + self.body.listVars()
 
+#------------------------------------------------------
+# special terms
 
 class _TRUE(Term):
 
@@ -311,17 +356,39 @@ class _TRUE(Term):
     def normalizeVars(self, db):
         return self
 
+class SpecialTerm(Term):
+
+    @classmethod
+    def createFromTerm(cls, term):
+        return cls(*term.args)
+
+class Not(SpecialTerm):
+    """
+    Negate stuff.
+    """
+
+    def query(self, brain):
+        gen = brain.parsedQuery(self.args[1])
+        try:
+            gen.next()
+            return
+        except StopIteration:
+            yield {}
+        
+
 
 TRUE = _TRUE()
 
-parser = parsley.makeGrammar(grammar, {
+grammar_bindings = {
     'Atom': Atom,
     'Term': Term,
     'Var': Var,
     'Rule': Rule,
     'And': And,
     'TRUE': TRUE,
-})
+    'Decimal': Decimal,
+}
+PARSER = parsley.makeGrammar(grammar, grammar_bindings)
 
 
 def humanize(d):
@@ -332,20 +399,44 @@ class Brain(object):
 
     def __init__(self):
         self._rules = []
+        self._terms = {
+            'not': Not.createFromTerm,
+        }
 
     def add(self, rule):
         """
         Add a fact to this brain.
         """
-        rule = parser(rule).rule().normalizeVars()
+        rule = PARSER(rule).rule()\
+            .normalizeVars()\
+            .convertSpecialTerms(self)
         self._rules.append(rule)
+
+    def addTermType(self, name, constructor):
+        """
+        Add a special kind of term type by name.
+        """
+        self._terms[name] = constructor
+
+    def convertToSpecialTerm(self, term):
+        """
+        Convert a Term to a special Term known to this Brain.
+        """
+        if not term.args:
+            return term
+        first_arg = term.args[0]
+        if isinstance(first_arg, Atom):
+            constructor = self._terms.get(first_arg.value, None)
+            if constructor is not None:
+                return constructor(term)
+        return term
 
     def query(self, query):
         """
         Query the brain.
         """
         log('query', query)
-        query = parser(query).rule().normalizeVars().head
+        query = PARSER(query).rule().normalizeVars().head
         log('parsed -> ', repr(query))
         for match in self.parsedQuery(query):
             log(colored('** {0}'.format(humanize(match)), 'cyan'))
@@ -380,32 +471,20 @@ class Brain(object):
                     log('   ret', ret)
                     yield ret
                 else:
-                    for match in rule.body.query(self):
+                    mapped_body = rule.body.substitute(mapping)
+                    log('  MAKING', repr(mapped_body))
+                    for match in mapped_body.query(self):
                         log(colored('\nQUERY {0!r}'.format(query), attrs=['dark']))
                         log(colored('  RULE  {0!r}'.format(rule), attrs=['dark']))
-                        log('  mapping', mapping)
+                        log(colored('  BODY  {0!r}'.format(mapped_body), attrs=['dark']))
+                        log(colored('  mapping {0}'.format(mapping), attrs=['dark']))
+                        log('  match  ', match)
                         rev_map = reverseDict(mapping)
                         log('  rev    ', rev_map)
-                        log('  match  ', match)
                         
-                        # convert match back using mapping
+                        mapped_vars = [x for x in rev_map if isinstance(x, Var)]
                         ret = {}
-                        try:
-                            for k,v in list(rev_map.items()):
-                                if isinstance(v, Var):
-                                    match_v = match[v]
-                                    if isinstance(k, Var):
-                                        ret[k] = match_v
-                                    elif match_v != k:
-                                        raise Conflict("Can't merge", rev_map, match)
-                                elif isinstance(k, Var):
-                                    ret[k] = v
-                        except Conflict as e:
-                            log('  CONFLICT', e)
-                            continue
-        
-                        log('  ret    ', ret)
+                        for var in mapped_vars:
+                            ret[var] = match.get(var, rev_map[var])
                         yield ret
-
-
 
