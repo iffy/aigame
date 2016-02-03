@@ -5,6 +5,7 @@ from termcolor import colored
 
 grammar = '''
 tchar = letterOrDigit:x ?(x in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') -> x
+ws = ' '*
 
 #----------------------------
 # borrowed from http://parsley.readthedocs.org/en/latest/tutorial2.html
@@ -25,18 +26,43 @@ atom =
     # string
     | letter:first <tchar*>:rest ?(first == first.lower()) -> Atom(first + rest)
 
+#----------------------------
+# variables
+#----------------------------
 var = letter:first <tchar*>:rest ?(first == first.upper()) -> Var(first + rest)
-ws = ' '*
 
+#----------------------------
+# expressions
+#----------------------------
+expression = atom
+
+#----------------------------
+# tags
+#----------------------------
+tag_name = <tchar+>
+tag = tag_name:key ws '=' ws atom:value -> (Var(key), value)
+tag_list = (tag:first (ws ',' ws tag)*:rest -> [first] + rest) | -> []
+tagging = ws '@' ws tag_list:x -> dict(x)
+
+tag_prop = <tchar+>:key ws '(' ws expression:val ws ')' -> (key, val)
+tag_prop_list = (tag_prop:first (ws ',' ws tag_prop)*:rest -> [first] + rest) | -> []
+tag_prop_def = '@' ws tag_name:name ws tag_prop_list:props -> TagProps(name, dict(props))
+
+#----------------------------
+# terms
+#----------------------------
 simple_term = atom | var
 term = simple_term:x -> x
-    | '(' term_list:x ')' -> Term(*x)
+    | '(' term_list:x ')' (tagging)?:tags -> Term(x, tags=tags)
 term_list = (term:first (ws ',' ws term)*:rest -> [first] + rest) | -> []
 
 and_list = (term:first (ws 'and' ws term)*:rest -> [first] + rest) | -> []
 
 rule = term:head ws 'if' ws and_list:body -> Rule(head, And(body))
        | term:head -> Rule(head, TRUE)
+
+
+clause = rule | tag_prop_def
 '''
 
 
@@ -152,8 +178,9 @@ def combineDicts(dicts):
 
 class Term(object):
 
-    def __init__(self, *args):
+    def __init__(self, args, tags=None):
         self.args = args
+        self.tags = tags or []
 
     @property
     def arity(self):
@@ -186,23 +213,26 @@ class Term(object):
     def matches_Var(self, other, brain):
         yield {self: other}
 
+    def clone(self, args):
+        return self.__class__(args, tags=self.tags)
+
     def substitute(self, mapping):
         """
         Create a new Term with my args replaced according to
         the mapping.  Typically, the mapping is something
         returned by my C{match} function.
         """
-        return self.__class__(*[x.substitute(mapping) for x in self.args])
+        return self.clone([x.substitute(mapping) for x in self.args])
 
     def query(self, brain):
         return brain.parsedQuery(self)
 
     def normalizeVars(self, db):
-        return Term(*[x.normalizeVars(db) for x in self.args])
+        return self.clone([x.normalizeVars(db) for x in self.args])
 
     def convertSpecialTerms(self, brain):
         return brain.convertToSpecialTerm(
-            self.__class__(*[x.convertSpecialTerms(brain) for x in self.args]))
+            self.clone([x.convertSpecialTerms(brain) for x in self.args]))
 
     def listVars(self):
         ret = []
@@ -214,7 +244,10 @@ class Term(object):
         return tuple([x.humanValue() for x in self.args])
 
     def __repr__(self):
-        return '{0}{1!r}'.format(self.__class__.__name__, self.args)
+        s = '{0}{1!r}'.format(self.__class__.__name__, self.args)
+        if self.tags:
+            s += '@{0}'.format(self.tags)
+        return s
 
     def __str__(self):
         return '({0})'.format(', '.join(map(str, self.args)))
@@ -356,11 +389,13 @@ class _TRUE(Term):
     def normalizeVars(self, db):
         return self
 
+TRUE = _TRUE([])
+
 class SpecialTerm(Term):
 
     @classmethod
     def createFromTerm(cls, term):
-        return cls(*term.args)
+        return cls(term.args)
 
 class Not(SpecialTerm):
     """
@@ -374,10 +409,16 @@ class Not(SpecialTerm):
             return
         except StopIteration:
             yield {}
-        
 
 
-TRUE = _TRUE()
+class TagProps(object):
+
+    def __init__(self, name, props):
+        self.name = name
+        self.props = props
+
+    def __repr__(self):
+        return '<TagProps {0} {1!r}>'.format(self.name, self.props)
 
 grammar_bindings = {
     'Atom': Atom,
@@ -387,6 +428,7 @@ grammar_bindings = {
     'And': And,
     'TRUE': TRUE,
     'Decimal': Decimal,
+    'TagProps': TagProps,
 }
 PARSER = parsley.makeGrammar(grammar, grammar_bindings)
 
@@ -399,18 +441,24 @@ class Brain(object):
 
     def __init__(self):
         self._rules = []
-        self._terms = {
-            'not': Not.createFromTerm,
-        }
+        self._terms = {}
+        self.tag_props = {}
 
-    def add(self, rule):
+        # default specials
+        self.addTermType('not', Not.createFromTerm)
+
+    def add(self, string):
         """
         Add a fact to this brain.
         """
-        rule = PARSER(rule).rule()\
-            .normalizeVars()\
-            .convertSpecialTerms(self)
-        self._rules.append(rule)
+        clause = PARSER(string).clause()
+        if isinstance(clause, Rule):
+            rule = clause.normalizeVars().convertSpecialTerms(self)
+            self._rules.append(rule)
+        elif isinstance(clause, TagProps):
+            self.tag_props[clause.name] = clause.props
+        else:
+            raise Exception('Unknown clause type', clause)
 
     def addTermType(self, name, constructor):
         """
@@ -468,6 +516,12 @@ class Brain(object):
                 if isinstance(rule.body, _TRUE):
                     log('  TRUE', mapping)
                     ret = reverseDict(mapping)
+                    # trim it
+                    for k in list(ret):
+                        if not isinstance(k, Var):
+                            ret.pop(k)
+                    # merge in tags
+                    ret.update(rule.head.tags)
                     log('   ret', ret)
                     yield ret
                 else:

@@ -224,3 +224,33 @@ class ScenarioBrainTest(TestCase):
             'X': 'sibling',
             'Y': 'mike',
         })
+
+
+class BrainTagTest(TestCase):
+
+    def setUp(self):
+        Var.count = 0
+
+    def test_simple(self):
+        """
+        You can tag rules with numbers
+        """
+        brain = Brain()
+        brain.add('(cats, eat, fish)@x=2')
+        results = list(brain.query('(cats, eat, fish)'))
+        assertObjectSubsetIn(self, results, {
+            'x': 2,
+        })
+        self.assertEqual(len(results), 1)
+
+    def test_default(self):
+        """
+        Tags can have a global default.
+        """
+        brain = Brain()
+        brain.add('@x default(2)')
+        brain.add('(cats, eat, fish)')
+        results = list(brain.query('(cats, eat, fish)'))
+        assertObjectSubsetIn(self, results, {
+            'x': 2,
+        })
