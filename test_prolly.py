@@ -7,9 +7,11 @@ from prolly import Brain, Var
 def assertObjectSubsetIn(testcase, listing, obj):
     is_match = False
     for item in listing:
+        print 'item', item
         matches = True
         try:
             for k,v in obj.items():
+                print 'obj', k, v
                 if item[k] != v:
                     matches = False
                     break
@@ -239,7 +241,9 @@ class BrainTagTest(TestCase):
         brain.add('(cats, eat, fish)@x=2')
         results = list(brain.query('(cats, eat, fish)'))
         assertObjectSubsetIn(self, results, {
-            'x': 2,
+            'tags': {
+                'x': 2,
+            },
         })
         self.assertEqual(len(results), 1)
 
@@ -252,5 +256,24 @@ class BrainTagTest(TestCase):
         brain.add('(cats, eat, fish)')
         results = list(brain.query('(cats, eat, fish)'))
         assertObjectSubsetIn(self, results, {
-            'x': 2,
+            'tags': {
+                'x': 2,
+            },
         })
+
+    def test_and(self):
+        """
+        You can define what happens to tags when they're anded.
+        """
+        brain = Brain()
+        brain.add('@x and(a * b)')
+        brain.add('(hello) if (met) and (notgreeted)')
+        brain.add('(met)@x=2')
+        brain.add('(notgreeted)@x=3')
+        results = list(brain.query('(hello)'))
+        assertObjectSubsetIn(self, results, {
+            'tags': {
+                'x': 6,
+            }
+        })
+

@@ -34,7 +34,18 @@ var = letter:first <tchar*>:rest ?(first == first.upper()) -> Var(first + rest)
 #----------------------------
 # expressions
 #----------------------------
-expression = atom
+parens = '(' ws expression:e ws ')' -> e
+value = atom | parens
+add = '+' ws expr2:n -> ('+', n)
+sub = '-' ws expr2:n -> ('-', n)
+mul = '*' ws value:n -> ('*', n)
+div = '/' ws value:n -> ('/', n)
+
+addsub = ws (add | sub)
+muldiv = ws (mul | div)
+
+expression = expr2:left addsub*:right -> calculate(left, right)
+expr2 = value:left muldiv*:right -> calculate(left, right)
 
 #----------------------------
 # tags
@@ -76,10 +87,15 @@ def log(*args):
 def reverseDict(d):
     return {v:k for k,v in d.items()}
 
-def _mergeWithoutOverwriting(a, b):
+def _mergeWithoutOverwriting(a, b, tag_merge_rules=None):
     """
     Merge every new value in b into a
     """
+    tag_merge_rules = tag_merge_rules or {}
+    atags = a.pop('tags', {})
+    btags = b.pop('tags', {})
+
+    # merge normal data
     a_copy = {}
     b_copy = {k:v for k,v in b.items()}
     for k,v in a.items():
@@ -95,7 +111,21 @@ def _mergeWithoutOverwriting(a, b):
             else:
                 raise Conflict('Not the same merging', a, b, k)
         a_copy[k] = v
-    return a_copy
+    ret = a_copy
+
+    # merge tags
+    for tag,func in tag_merge_rules.items():
+        ret['tags'] = tags = {}
+        for k in set(atags) & set(btags):
+            aval = atags.get(k, None)
+            bval = btags.get(k, None)
+            if aval is None:
+                tags[k] = bval
+            elif bval is None:
+                tags[k] = aval
+            else:
+                tags[k] = func(aval, bval)
+    return ret
 
 
 def logTruthy(method):
@@ -162,7 +192,7 @@ class Atom(object):
     def substitute(self, mapping):
         return self
 
-    def humanValue(self):
+    def pythonValue(self):
         return self.value
 
     def listVars(self):
@@ -247,8 +277,8 @@ class Term(object):
             ret.extend(arg.listVars())
         return ret
 
-    def humanValue(self):
-        return tuple([x.humanValue() for x in self.args])
+    def pythonValue(self):
+        return tuple([x.pythonValue() for x in self.args])
 
     def __repr__(self):
         s = '{0}{1!r}'.format(self.__class__.__name__, self.args)
@@ -290,7 +320,7 @@ class Var(object):
     def listVars(self):
         return [self]
 
-    def humanValue(self):
+    def pythonValue(self):
         return self.name
 
 
@@ -336,7 +366,10 @@ class And(object):
                 mapped_tail = [x.substitute(match) for x in tail]
                 for tail_match in self._partialQuery(mapped_tail, brain):
                     try:
-                        full_match = _mergeWithoutOverwriting(match, tail_match)
+                        log('  match     ', match)
+                        log('  tail_match', tail_match)
+                        full_match = _mergeWithoutOverwriting(match, tail_match, brain.tagMergeRules())
+                        log('  full_match', full_match)
                     except Conflict:
                         log('  conflict')
                         log('  match', match)
@@ -344,6 +377,7 @@ class And(object):
                         continue
                     yield full_match
             else:
+                log('no tail', match)
                 yield match
 
     def listVars(self):
@@ -427,6 +461,70 @@ class TagProps(object):
     def __repr__(self):
         return '<TagProps {0} {1!r}>'.format(self.name, self.props)
 
+
+class BinaryOp(object):
+
+    op = '?'
+
+    def __init__(self, left, right):
+        self.left = left
+        self.right = right
+
+    def __repr__(self):
+        return '[{0!r} {1} {2!r}]'.format(self.left, self.op, self.right)
+
+    def evaluate(self, variables):
+        left = self.left
+        if isinstance(self.left, BinaryOp):
+            left = left.evaluate(variables)
+        else:
+            left = left.pythonValue()
+            left = variables.get(left, left)
+        right = self.right
+        if isinstance(self.right, BinaryOp):
+            right = right.evaluate(variables)
+        else:
+            right = right.pythonValue()
+            right = variables.get(right, right)
+        return self._eval(left, right)
+
+
+class Add(BinaryOp):
+    op = '+'
+
+    def _eval(self, left, right):
+        print self, '_eval', left, right
+
+class Sub(BinaryOp):
+    op = '-'
+
+    def _eval(self, left, right):
+        print self, '_eval', left, right
+
+class Mul(BinaryOp):
+    op = '*'
+
+    def _eval(self, left, right):
+        print self, '_eval', left, right
+        return left * right
+
+class Div(BinaryOp):
+    op = '/'
+
+    def _eval(self, left, right):
+        print self, '_eval', left, right
+
+
+binops = {}
+for cls in [Add, Sub, Mul, Div]:
+    binops[cls.op] = cls
+
+def calculate(start, pairs):
+    result = start
+    for op, right in pairs:
+        result = binops[op](result, right)
+    return result
+
 grammar_bindings = {
     'Atom': Atom,
     'Term': Term,
@@ -436,12 +534,23 @@ grammar_bindings = {
     'TRUE': TRUE,
     'Decimal': Decimal,
     'TagProps': TagProps,
+    'calculate': calculate,
 }
 PARSER = parsley.makeGrammar(grammar, grammar_bindings)
 
 
-def humanize(d):
-    return {k.humanValue():v.humanValue() for k,v in d.items()}
+def tobasicType(x):
+    if hasattr(x, 'pythonValue'):
+        return x.pythonValue()
+    elif isinstance(x, dict):
+        return humanizeDict(x)
+    elif isinstance(x, (tuple, list)):
+        return type(x)([tobasicType(z) for z in x])
+    else:
+        return x
+
+def humanizeDict(d):
+    return {tobasicType(k):tobasicType(v) for k,v in d.items()}
 
 
 class Brain(object):
@@ -494,6 +603,19 @@ class Brain(object):
                 ret[k] = v['default']
         return ret
 
+    def tagMergeRules(self):
+        """
+        Get the merge rules for tags
+        """
+        ret = {}
+        for k, v in self.tag_props.items():
+            if 'and' in v:
+                ret[k] = lambda x,y: v['and'].evaluate({
+                    Atom('a'): x,
+                    Atom('b'): y,
+                    })
+        return ret
+
     def query(self, query):
         """
         Query the brain.
@@ -502,14 +624,19 @@ class Brain(object):
         query = PARSER(query).rule().normalizeVars().head
         log('parsed -> ', repr(query))
         for match in self.parsedQuery(query):
-            log(colored('** {0}'.format(humanize(match)), 'cyan'))
-            ret = humanize(match)
+            log(colored('** {0}'.format(humanizeDict(match)), 'cyan'))
+            ret = humanizeDict(match)
             yield ret
 
     def unique(self, gen):
+        def flattenDicts(x):
+            if isinstance(x, dict):
+                return tuple(sorted((flattenDicts(k),flattenDicts(v)) for k,v in x.items()))
+            else:
+                return x
         encountered = set()
         for x in gen:
-            h = hash(tuple(sorted(x.items())))
+            h = hash(flattenDicts(x))
             if h in encountered:
                 continue
             encountered.add(h)
@@ -536,7 +663,7 @@ class Brain(object):
                         if not isinstance(k, Var):
                             ret.pop(k)
                     # merge in tags
-                    ret.update(rule.head.getTags(self))
+                    ret['tags'] = rule.head.getTags(brain=self)
                     log('   ret', ret)
                     yield ret
                 else:
