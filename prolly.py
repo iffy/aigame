@@ -40,13 +40,13 @@ expression = atom
 # tags
 #----------------------------
 tag_name = <tchar+>
-tag = tag_name:key ws '=' ws atom:value -> (Var(key), value)
+tag = tag_name:key ws '=' ws atom:value -> (Atom(key), value)
 tag_list = (tag:first (ws ',' ws tag)*:rest -> [first] + rest) | -> []
 tagging = ws '@' ws tag_list:x -> dict(x)
 
 tag_prop = <tchar+>:key ws '(' ws expression:val ws ')' -> (key, val)
 tag_prop_list = (tag_prop:first (ws ',' ws tag_prop)*:rest -> [first] + rest) | -> []
-tag_prop_def = '@' ws tag_name:name ws tag_prop_list:props -> TagProps(name, dict(props))
+tag_prop_def = '@' ws tag_name:name ws tag_prop_list:props -> TagProps(Atom(name), dict(props))
 
 #----------------------------
 # terms
@@ -180,7 +180,7 @@ class Term(object):
 
     def __init__(self, args, tags=None):
         self.args = args
-        self.tags = tags or []
+        self.tags = tags or {}
 
     @property
     def arity(self):
@@ -223,6 +223,13 @@ class Term(object):
         returned by my C{match} function.
         """
         return self.clone([x.substitute(mapping) for x in self.args])
+
+    def getTags(self, brain):
+        tags = self.tags.copy()
+        defaults = brain.defaultTags()
+        for k in set(defaults) - set(tags):
+            tags[k] = defaults[k]
+        return tags
 
     def query(self, brain):
         return brain.parsedQuery(self)
@@ -479,6 +486,14 @@ class Brain(object):
                 return constructor(term)
         return term
 
+    def defaultTags(self):
+        ret = {}
+        for k,v in self.tag_props.items():
+            print k, v
+            if 'default' in v:
+                ret[k] = v['default']
+        return ret
+
     def query(self, query):
         """
         Query the brain.
@@ -521,7 +536,7 @@ class Brain(object):
                         if not isinstance(k, Var):
                             ret.pop(k)
                     # merge in tags
-                    ret.update(rule.head.tags)
+                    ret.update(rule.head.getTags(self))
                     log('   ret', ret)
                     yield ret
                 else:
